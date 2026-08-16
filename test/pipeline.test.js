@@ -410,6 +410,34 @@ test("a hand-edited designSystem.dir cannot escape the project", () => {
  * before the spec existed and no phase refreshed it: `depth=both` produced an
  * archive with no spec in it, every gate green. */
 
+/**
+ * Entry names straight out of a zip's central directory.
+ *
+ * Not `tar -tf`: bsdtar reads zips and GNU tar does not, so shelling out passes on
+ * Windows and fails on a Linux runner for a reason that has nothing to do with the
+ * bundle. Reading the record is also a stronger assertion — it is what an extractor
+ * actually consults.
+ */
+function zipEntries(file) {
+  const buf = readFileSync(file);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  assert.ok(eocd >= 0, "no zip end-of-central-directory record");
+
+  const count = buf.readUInt16LE(eocd + 10);
+  const names = [];
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count; n++) {
+    assert.equal(buf.readUInt32LE(p), 0x02014b50, `central directory entry ${n}`);
+    const nameLen = buf.readUInt16LE(p + 28);
+    names.push(buf.toString("utf8", p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+  }
+  return names;
+}
+
 /** Author over the skeleton the way the runbook tells the agent to. */
 function authorSpec(proj, dirName) {
   const readme = join(proj, dirName, "README.md");
@@ -444,10 +472,7 @@ test("depth=both puts the authored spec inside the finished ARCHIVE", () => {
   assert.equal(run("hod-archive.js", ["--format", "zip"], out).code, 0);
 
   // The deliverable, read back out of the zip itself — not inferred from the tree.
-  const zip = join(out, "Fixture Project-handoff.zip");
-  const listing = execFileSync(
-    process.platform === "win32" ? "C:\\Windows\\System32\\tar.exe" : "tar",
-    ["-tf", zip], { encoding: "utf8" }).split(/\r?\n/);
+  const listing = zipEntries(join(out, "Fixture Project-handoff.zip"));
   assert.ok(listing.some((e) => e.endsWith("project/design_handoff_landing_page/README.md")),
     `spec README missing from the archive:\n${listing.join("\n")}`);
   assert.ok(listing.some((e) => e.includes("design_handoff_landing_page/prototypes/Landing.dc.html")),
