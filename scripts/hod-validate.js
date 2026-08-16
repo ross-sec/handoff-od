@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, walk, Gates, TEXTUAL,
+  args, die, readState, readJson, writeJson, walk, Gates, TEXTUAL, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { verifyAdherence } from "./_adherence.js";
 
@@ -117,7 +117,7 @@ const g = new Gates("03 validate", { strict: !!a.strict });
 // system @imports a remote font produces a bundle that needs the network. That is
 // the source's property, not our defect. `--strict` refuses to ship it anyway.
 g.warn("offline-complete", remoteHits.length === 0, remoteHits.slice(0, 3).join(" | ") || "no remote resources");
-g.check("no _ds_sync.json", !files.some((f) => /(^|\/)_ds_sync\.json$/.test(f)), "I4");
+g.check("no sync bookkeeping", !files.some((f) => SYNC_BOOKKEEPING.test(f)), "I4 — _ds_sync.json / _ods_sync.json / _ods_needs_recompile");
 g.check("no re-suffixed sources", !files.some((f) => /\.(jsx|d\.ts)\.txt$/i.test(f)), "I1");
 g.check("no unfilled README slots", !/\{\{[A-Z_]+\}\}/.test(readme));
 g.check("README is the instruction carrier", /^#\s+CODING AGENTS/m.test(readme));

@@ -29,7 +29,11 @@ function project() {
   writeFileSync(join(proj, "Landing.dc.html"),
     `<link rel="stylesheet" href="_ds/fx/_ds_bundle.css">\n<script src="./support.js"></script>\n<h1>Landing</h1>`);
   writeFileSync(join(proj, "support.js"), "// runtime");
+  // Both sync dialects: the proprietary anchor and sync-od's, which a project that
+  // arrived here THROUGH sync-od actually carries.
   writeFileSync(join(proj, "_ds_sync.json"), `{"bundleSha12":"deadbeef"}`);
+  writeFileSync(join(proj, "_ods_sync.json"), `{"bundleSha12":"cafebabe"}`);
+  writeFileSync(join(proj, "_ods_needs_recompile"), "");
 
   writeFileSync(join(ds, "styles.css"), `@import "./fonts/fonts.css";\n@import "./_ds_bundle.css";`);
   writeFileSync(join(ds, "_ds_bundle.css"), ":root{--bg:#000}");
@@ -77,7 +81,9 @@ test("full pipeline: detect -> bundle -> validate -> archive", () => {
   assert.ok(!/\{\{[A-Z_]+\}\}/.test(readme), "no unfilled slots");
   assert.ok(readme.includes("_adherence.oxlintrc.json"), "the adherence config is explained");
 
-  assert.ok(!existsSync(join(bundle, "project", "_ds_sync.json")), "I4");
+  for (const bookkeeping of ["_ds_sync.json", "_ods_sync.json", "_ods_needs_recompile"]) {
+    assert.ok(!existsSync(join(bundle, "project", bookkeeping)), `I4 — ${bookkeeping} must not ship`);
+  }
   assert.ok(existsSync(join(bundle, "project", "_ds", "fx", "_ds_bundle.css")), "I3 alias shipped");
 
   const adherence = JSON.parse(readFileSync(join(bundle, "project", "_ds", DS, "_adherence.oxlintrc.json"), "utf8"));
@@ -123,6 +129,16 @@ test("validate blocks on a stray file at bundle root", () => {
   const v = run("hod-validate.js", [], out);
   assert.equal(v.code, 1);
   assert.match(v.out, /FAIL {2}root purity/);
+});
+
+test("validate blocks when sync bookkeeping sneaks into a bundle", () => {
+  const { proj, out } = project();
+  detect(proj, out);
+  run("hod-bundle.js", [], out);
+  writeFileSync(join(out, "fixture-project", "project", "_ods_sync.json"), "{}");
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 1);
+  assert.match(v.out, /FAIL {2}no sync bookkeeping/);
 });
 
 test("validate blocks on a re-suffixed source (the OD importer's .txt)", () => {

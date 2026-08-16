@@ -68,14 +68,54 @@ for (const rel of prototypes) {
 
 const dsDir = designSystem ? join(project.dir, designSystem.dir) : null;
 const manifest = dsDir ? readJson(join(dsDir, "_ds_manifest.json")) : null;
-const tokens = manifest?.tokens ?? [];
+
+/**
+ * Tokens come from the manifest when a design system is bound. Most projects have
+ * no manifest at all, so fall back to whatever carrier phase 00 detected — a W3C-ish
+ * `tokens.json` or CSS custom properties. The exporter never normalizes carriers and
+ * neither do we; we just read the one that exists.
+ */
+function tokensFromCarrier(rel) {
+  if (!rel || rel === "none") return [];
+  const abs = join(project.dir, rel);
+  if (!existsSync(abs)) return [];
+
+  if (/\.json$/i.test(rel)) {
+    const doc = readJson(abs);
+    if (!doc) return [];
+    const out = [];
+    for (const [group, body] of Object.entries(doc)) {
+      if (group.startsWith("$") || body === null || typeof body !== "object") continue;
+      (function flatten(node, path) {
+        for (const [k, v] of Object.entries(node)) {
+          if (k.startsWith("$")) continue;
+          if (v !== null && typeof v === "object") flatten(v, [...path, k]);
+          else out.push({ name: `--${[...path, k].join("-")}`, value: String(v), kind: group, definedIn: rel });
+        }
+      })(body, [group]);
+    }
+    return out;
+  }
+
+  const css = (() => { try { return readFileSync(abs, "utf8"); } catch { return ""; } })();
+  return [...css.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)]
+    .map((m) => ({ name: m[1], value: m[2].trim(), kind: "css", definedIn: rel }));
+}
+
+const tokens = manifest?.tokens?.length ? manifest.tokens : tokensFromCarrier(state.tokenCarrier);
 const byKind = tokens.reduce((acc, t) => ((acc[t.kind ?? "other"] ??= []).push(t), acc), {});
+
+// Where a reader can find the full set — the manifest's DS dir, or the carrier
+// phase 00 detected when there is no design system at all.
+const tokenSource = manifest?.tokens?.length && designSystem
+  ? `${posix(designSystem.dir)}/tokens/tokens.json`
+  : (state.tokenCarrier && state.tokenCarrier !== "none" ? state.tokenCarrier : "the prototype CSS");
 
 const tokenTable = Object.keys(byKind).length
   ? Object.entries(byKind).sort().map(([kind, list]) =>
       `**${kind}** (${list.length})\n\n| Token | Value |\n|---|---|\n` +
       list.slice(0, 12).map((t) => `| \`${t.name}\` | \`${t.value}\` |`).join("\n") +
-      (list.length > 12 ? `\n\n_…and ${list.length - 12} more — see \`${posix(designSystem.dir)}/tokens/tokens.json\`._` : "")
+      (list.length > 12 ? `\n\n_…and ${list.length - 12} more — see \`${tokenSource}\`._` : "")
     ).join("\n\n")
   : "TODO — no design-system manifest found; extract the tokens from the prototype CSS by hand.";
 
@@ -159,7 +199,10 @@ const g = new Gates(`02 spec ${slug}`);
 g.check("handoff folder created", existsSync(dir), posix(dir));
 g.check("prototypes copied", prototypes.length > 0, `${prototypes.length} file(s)`);
 g.check("README skeleton written", existsSync(join(dir, "README.md")));
-g.check("token table derived", !tokenTable.startsWith("TODO"), `${tokens.length} tokens`);
+// Advisory: a project may genuinely carry no tokens, and the author can still
+// extract them from the prototype CSS by hand.
+g.warn("token table derived", !tokenTable.startsWith("TODO"),
+  tokens.length ? `${tokens.length} tokens from ${state.tokenCarrier}` : "none found — author extracts by hand");
 if (screens.size) g.check("route map pre-filled", true, `${screens.size} screen states found`);
 console.log(`\nNEXT: author the prose over every TODO in ${posix(join(dir, "README.md"))},\n` +
   `then run:  node scripts/hod-validate.js --spec ${slug}`);

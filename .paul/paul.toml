@@ -1,5 +1,5 @@
 name = "handoff-od"
-version = "0.1.0"
+version = "0.1.1"
 status = "active"
 path = "plugins/handoff-od"
 tags = []
@@ -15,10 +15,10 @@ status = "in_progress"
 phases = 4
 
 [phase]
-number = 1
-name = "Build the plugin"
+number = 2
+name = "Live daemon validation"
 status = "complete"
-plans_completed = 1
+plans_completed = 2
 
 [loop]
 position = "IDLE"
@@ -27,6 +27,6 @@ position = "IDLE"
 groom = true
 
 [stats]
-total_plans = 1
+total_plans = 2
 total_phases = 4
 last_activity = "2026-08-16T03:00:00Z"

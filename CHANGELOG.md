@@ -2,6 +2,39 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.1] - 2026-08-16
+
+Validated against a running Open Design daemon (0.15.1). Everything below was found by the real
+loader or a real project — not by review.
+
+### Fixed
+
+- **Sync bookkeeping leaked into bundles.** The I4 exclusion matched only `_ds_sync.json`, the
+  proprietary tool's anchor. A project that arrived through `sync-od` carries `_ods_sync.json` and
+  `_ods_needs_recompile`, and both were being re-exported — a stale inbound anchor travelling with
+  outbound code can later vouch for state it never saw. Broadened to one shared `SYNC_BOOKKEEPING`
+  constant used by both the mirror and the gate, with a regression test.
+- **`od.context.skills[{path}]` does not resolve** in 0.15.1 — it emits `Unknown skill ref` and
+  contributes no context item, even for Open Design's own bundled `od-default`. Removed; the
+  portable skill reaches the prompt through `compat.agentSkills`, which is what the first-party
+  `od-nextjs-export` does. `od plugin validate` is now diagnostic-free.
+- **`{{var}}` interpolation is not implemented.** `useCase.query` placeholders survived verbatim
+  into the user's brief field. Rewritten as plain prose; inputs already arrive separately in
+  `ApplyResult.inputs`.
+- **Spec scaffold crashed on any project without a design system** — the token table dereferenced
+  `designSystem.dir` unconditionally. It now reads the token carrier phase 00 detected (W3C-ish
+  `tokens.json` or CSS custom properties), and the gate is advisory. Extracted 147 tokens from a
+  real project that has no manifest.
+- **The zip prompt embedded an absolute local path**, useless once pasted into an agent on another
+  machine. Bare filename now.
+
+### Added
+
+- `references/platforms.md` — "Verified against a live daemon", documenting five things the spec
+  gets wrong: the daemon does not listen on `7456`, `--source` must be `./`-relative and resolves
+  against the daemon's runtime dir, `path` refs do not resolve while `ref` does, no `{{var}}`
+  templating, and local installs land `trusted` with auto-derived capabilities.
+
 ## [0.1.0] - 2026-08-16
 
 Initial release. An Open Design plugin that hands a project off to **OpenCode** — the open-source

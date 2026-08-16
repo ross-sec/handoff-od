@@ -236,8 +236,23 @@ export function die(msg) {
 
 /* ── shared constants ───────────────────────────────────────────────────── */
 
-/** I4: inbound-sync bookkeeping never ships. */
-export const NEVER_SHIP = [/(^|\/)_ds_sync\.json$/, /(^|\/)\.git(\/|$)/, /(^|\/)node_modules(\/|$)/, /(^|\/)\.handoff(\/|$)/];
+/**
+ * I4: inbound-sync bookkeeping never ships.
+ *
+ * Two dialects, both real: `_ds_sync.json` is the proprietary tool's anchor,
+ * `_ods_sync.json` + `_ods_needs_recompile` are sync-od's. A project that arrived
+ * here THROUGH sync-od carries the latter, and an outbound bundle must not
+ * re-export them — a stale anchor travelling with the code can later vouch for
+ * state it never saw.
+ */
+export const SYNC_BOOKKEEPING = /(^|\/)(_ds_sync\.json|_ods_sync\.json|_ods_needs_recompile)$/;
+
+export const NEVER_SHIP = [
+  SYNC_BOOKKEEPING,
+  /(^|\/)\.git(\/|$)/,
+  /(^|\/)node_modules(\/|$)/,
+  /(^|\/)\.handoff(\/|$)/,
+];
 
 /** Anything fetched over the network breaks I2 (offline-complete). */
 export const REMOTE_URL = /\b(?:https?:)?\/\/(?!localhost|127\.0\.0\.1)[a-z0-9.-]+\.[a-z]{2,}/i;

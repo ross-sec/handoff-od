@@ -12,19 +12,20 @@ See: .paul/PROJECT.md (updated 2026-08-16)
 
 **Core value:** Hand an Open Design project to OpenCode and have it implemented faithfully — design
 system intact, fidelity enforced by lint rather than by eye.
-**Current focus:** v0.1 Initial Release — Phase 1 complete, Phase 2 (live daemon validation) next.
+**Current focus:** v0.1 Initial Release — Phases 1 and 2 complete, Phase 3 (publish) next.
 
 ## Current Position
 
 Milestone: v0.1 Initial Release (v0.1.0)
-Phase: 1 of 4 (Build the plugin) — complete
-Plan: 1 of 1 in Phase 1 — complete
-Status: Ready to plan Phase 2
-Last activity: 2026-08-16 — v0.1.0 built, 30 tests green, committed (e03ae95)
+Phase: 2 of 4 (Live daemon validation) — complete
+Plan: 1 of 1 in Phase 2 — complete
+Status: Ready to plan Phase 3 (publish)
+Last activity: 2026-08-16 — v0.1.1: validated against a live 0.15.1 daemon; install + doctor +
+simulate + apply clean, zero diagnostics; 4 real bugs found and fixed; 31 tests green
 
 Progress:
-- Milestone: [██░░░░░░░░] 25%
-- Phase 1:   [██████████] 100%
+- Milestone: [█████░░░░░] 50%
+- Phase 2:   [██████████] 100%
 
 ## Loop Position
 
@@ -50,7 +51,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
-| `file-read` / `file-write` appear in an official OD example but are absent from the closed atom catalog | 1 | S | Phase 2 — let `od plugin doctor` arbitrate |
+| Resolved: our 5 atoms all resolve; `doctor` is clean. The stale example was the problem, not the catalog | 2 | - | closed |
 | Version skew: repo 0.19.2 vs local 0.15.1 | 1 | M | Phase 2 — verify the manifest against 0.19.2 before publishing |
 | `chats/` transcript support is implemented but never exercised (absent from all four sample bundles) | 1 | S | When a user asks for it |
 | Emits 2 adherence rules more than upstream (bare-`FC<>` components) — deliberate superset | 1 | S | Only if a user reports noise |
@@ -59,8 +60,8 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 | Blocker | Impact | Resolution Path |
 |---------|--------|-----------------|
-| Open Design daemon was offline throughout the build | The manifest has never been exercised by the real plugin loader | Start the daemon, run Phase 2 |
 | `github.com/ross-sec/handoff-od` does not exist yet | Cannot push or publish | Phase 3 |
+| Daemon binds a random port, not 7456 | Any `od plugin` command needs `--daemon-url`/`OD_DAEMON_URL` | Documented in references/platforms.md |
 
 ## Boundaries (Active)
 
@@ -71,10 +72,11 @@ PLAN ──▶ APPLY ──▶ UNIFY
 ## Session Continuity
 
 Last session: 2026-08-16
-Stopped at: v0.1.0 committed (e03ae95); PAUL initialized
-Next action: Run /paul:plan to define Phase 2 (live daemon validation)
-Resume context: Daemon must be running at http://127.0.0.1:7456. The `od` binary is not on PATH —
-see `references/platforms.md` for the ELECTRON_RUN_AS_NODE invocation.
+Stopped at: v0.1.1 — Phase 2 complete; plugin installed and doctor-clean on the live daemon
+Next action: Run /paul:plan to define Phase 3 (publish)
+Resume context: The daemon binds a RANDOM port (was 60885), not 7456, and `od plugin install`
+ignores OD_SIDECAR_IPC_PATH. `od` is not on PATH — see the "Verified against a live daemon" section
+in `references/platforms.md` for the full invocation and the `./`-relative `--source` quirk.
 
 ---
 *STATE.md — Updated after every significant action*

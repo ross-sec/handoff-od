@@ -7,7 +7,7 @@
 //   node scripts/hod-prompt.js [--out <dir>] [--transport mcp|zip] [--instructions "…"]
 //                              [--focus "a.html,b.css"] [--agent claude|opencode|…]
 import { existsSync, readFileSync } from "node:fs";
-import { join, dirname, normalize } from "node:path";
+import { join, dirname, normalize, basename } from "node:path";
 import { args, die, readState, readJson, writeText, posix } from "./_lib.js";
 
 const a = args();
@@ -85,8 +85,10 @@ if (transport === "mcp") {
     (imports.length ? `Also read these files the selection imports:\n${bullets(imports)}\n\n` : "") +
     `Implement: ${target}\n` + ROUND_TRIP;
 } else {
+  // Bare filename, not the absolute path it happens to sit at here — the prompt is
+  // pasted into an agent that may be on another machine entirely.
   const archiveMeta = readJson(join(outRoot, ".handoff", "archive.json"));
-  const zip = archiveMeta?.written?.find((w) => w.format === "zip")?.path ?? `${project.name}-handoff.zip`;
+  const zip = basename(archiveMeta?.written?.find((w) => w.format === "zip")?.path ?? `${project.name}-handoff.zip`);
   prompt =
     `Unzip \`${zip}\` into your repo, then read \`${project.slug}/README.md\` in full and follow it.\n\n` +
     (focus.length ? `Focus on these files (the whole project is in the bundle):\n${bullets(focus)}\n\n` : "") +

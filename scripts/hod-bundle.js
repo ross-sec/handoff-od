@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   args, die, readState, readJson, writeJson, writeText, copyTree, walk,
-  Gates, posix, NEVER_SHIP,
+  Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { buildAdherence, collectComponents } from "./_adherence.js";
 
@@ -141,7 +141,7 @@ g.check("no unfilled README slots", !/\{\{[A-Z_]+\}\}/.test(readme),
 g.check("project mirrored verbatim", mirrored.length === project.fileCount,
   `${mirrored.length}/${project.fileCount} files`);
 g.check("no re-suffixed sources", !bundleFiles.some((f) => /\.(jsx|d\.ts)\.txt$/i.test(f)), "I1");
-g.check("no _ds_sync.json", !bundleFiles.some((f) => /(^|\/)_ds_sync\.json$/.test(f)), "I4");
+g.check("no sync bookkeeping", !bundleFiles.some((f) => SYNC_BOOKKEEPING.test(f)), "I4 — _ds_sync.json / _ods_sync.json / _ods_needs_recompile");
 
 if (designSystem) {
   const dsPrefix = designSystem.dir === "." ? "project/" : `project/${designSystem.dir}/`;

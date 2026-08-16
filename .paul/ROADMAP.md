@@ -17,14 +17,14 @@ loop with a real demonstration.
 
 **v0.1 Initial Release** (v0.1.0)
 Status: In progress
-Phases: 1 of 4 complete
+Phases: 2 of 4 complete
 
 ## Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 1 | Build the plugin | 1 | Complete | 2026-08-16 |
-| 2 | Live daemon validation | TBD | Not started | - |
+| 2 | Live daemon validation | 1 | Complete | 2026-08-16 |
 | 3 | Publish | TBD | Not started | - |
 | 4 | Prove the round trip | TBD | Not started | - |
 
@@ -63,7 +63,7 @@ the 0.15.1-vs-0.19.2 skew.
 - Fix whatever the real loader rejects
 
 **Plans:**
-- [ ] 02-01: To be defined during `/paul:plan`
+- [x] 02-01: Install + doctor + simulate + apply on a live 0.15.1 daemon; 4 bugs found and fixed (v0.1.1)
 
 ### Phase 3: Publish
 

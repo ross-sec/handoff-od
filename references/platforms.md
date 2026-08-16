@@ -14,6 +14,46 @@ shells out to whatever scripts the folder bundles. That is why this package has 
 package is `private: true`. There is no plugin SDK and no types package. Do not add an
 `@open-design/*` dependency — it will not resolve. Validate against the schema URL instead.
 
+## Verified against a live daemon — five things the docs get wrong
+
+All confirmed on a running 0.15.1 build. Every one of these cost a debugging cycle.
+
+**1. The daemon is not on `127.0.0.1:7456`.** The desktop app binds a **random high port** and a
+Windows **named pipe**. `od plugin install` ignores `OD_SIDECAR_IPC_PATH` and hard-fails to 7456
+with `ECONNREFUSED`. Find the real port and pass it:
+
+```bash
+# Windows — the daemon port is whichever one answers /api/plugins
+powershell -Command "Get-NetTCPConnection -State Listen | ForEach-Object { \
+  \$p=(Get-Process -Id \$_.OwningProcess -EA SilentlyContinue); \
+  if(\$p.ProcessName -like '*Open Design*'){ \$_.LocalPort } }"
+export OD_DAEMON_URL="http://127.0.0.1:<port>"      # or --daemon-url
+```
+
+**2. `--source` must start with `./`, and it resolves against the daemon's runtime dir** — not your
+shell's cwd, and not an absolute path. An absolute path is treated as a *marketplace name* and 404s
+with `plugin-not-found`. The runtime dir is
+`…\Roaming\Open Design\namespaces\<ns>\runtime\`, so a folder elsewhere needs a `./`-relative walk:
+
+```bash
+od plugin install --source "./../../../../../../Desktop/projects/SKILLS_DEV/plugins/handoff-od"
+```
+
+**3. `od.context.skills[{path: "./SKILL.md"}]` does not resolve.** It emits
+`Unknown skill ref: './SKILL.md'` and contributes **no** context item — even for an already-installed
+plugin, and even for Open Design's own bundled `od-default`. Only `{ref: "<registered-id>"}`
+resolves. Put the portable skill in **`compat.agentSkills`** instead, which is warning-free and is
+what the first-party `od-nextjs-export` does. Same trap for `context.craft` slugs.
+
+**4. `{{var}}` interpolation in `useCase.query` does not happen.** Placeholders survive verbatim into
+the user's brief field. The first-party plugin with two inputs has **no placeholders at all** — inputs
+are delivered separately in `ApplyResult.inputs`. Write the query as plain prose.
+
+**5. A local-folder install lands as `trust=trusted`, not `restricted`,** and the resolver
+auto-derives capabilities you never declared (`genui:confirmation`, `pipeline:*`) and auto-injects a
+GenUI surface per atom that needs one (`diff-review` adds `__auto_diff_review_verify:choice`). Read
+`capabilitiesRequired` from a real `apply` rather than assuming your manifest's list is the whole set.
+
 ## Installing this plugin
 
 ```bash
