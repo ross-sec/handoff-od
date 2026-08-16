@@ -5,7 +5,7 @@ license: MIT
 metadata:
   author: Andre Ross
   organization: Ross Technologies
-  version: '0.1.5'
+  version: '0.1.6'
 ---
 
 # Handoff to OpenCode
@@ -65,16 +65,25 @@ carry it. There are two mechanisms and they are frequently confused:
 Scripts live in this plugin's `scripts/`. Run them with `node`, from the directory you want the
 bundle written to (`--out` overrides).
 
-| # | Command | Emits | Gate |
-|---|---|---|---|
-| 00 | `hod-detect.js --project-name <name> --project-dir <cwd> [--entry <file>]` | `.handoff/state.json` | entry mode, design system, token carrier |
-| 01 | `hod-bundle.js [--force]` | `<slug>/` | slots filled, mirror verbatim, DS + alias, adherence |
-| 02 | `hod-spec.js --feature "<scope>"` | `design_handoff_<slug>/` | skeleton + prototypes copied |
-| 03 | `hod-validate.js [--spec <slug>] [--strict]` | `.handoff/validate.json` | see below |
-| 04 | `hod-archive.js [--format zip\|targz\|both]` | `<Project Name>-handoff.zip` + `.tar.gz` | entry count |
-| — | `hod-prompt.js --transport mcp\|zip` | `.handoff/prompt.txt` | — |
+Run them in **this order**. The numbering is the phase, not the sequence:
 
-Skip 02 when `depth=bundle`. Skip 01/04 when `depth=spec`.
+| Order | # | Command | Emits | Gate |
+|---|---|---|---|---|
+| 1 | 00 | `hod-detect.js --project-name <name> --project-dir <cwd> [--entry <file>]` | `.handoff/state.json` | entry mode, design system, token carrier, options satisfiable |
+| 2 | 02 | `hod-spec.js --feature "<scope>"` | `design_handoff_<slug>/` in the **source project** | skeleton + prototypes copied |
+| 3 | — | *author the spec over its TODO markers*, then `hod-validate.js --spec` | — | no TODO markers left |
+| 4 | 01 | `hod-bundle.js [--force]` | `<slug>/` | slots filled, mirror verbatim, DS + alias, adherence, spec nested |
+| 5 | 03 | `hod-validate.js [--strict]` | `.handoff/validate.json` | see below |
+| 6 | 04 | `hod-archive.js [--format zip\|targz\|both]` | `<Project Name>-handoff.zip` + `.tar.gz` | entry count |
+| — | — | `hod-prompt.js --transport mcp\|zip\|both` | `.handoff/prompt.txt` | — |
+
+**02 runs before 01, and that ordering is load-bearing.** Phase 02 writes the spec into the
+*source project*; phase 01 takes a single verbatim snapshot of that project and no later phase
+refreshes it. Bundle first and the spec is simply absent from the archive — every gate still passes,
+and the `depth=both` deliverable is silently missing. Phase 01 refuses to run at `depth=both` until
+the authored, TODO-free spec exists, so the ordering is enforced rather than merely written down.
+
+Skip 02 when `depth=bundle` — the script refuses at that depth. Skip 01/04 when `depth=spec` — same.
 
 ### Getting the facts in
 
@@ -113,7 +122,7 @@ asymmetry is deliberate — the agent should be able to look beyond the selectio
 ├── README.md         # the instruction carrier — generated, never hand-written
 ├── AGENTS.md         # pointer (rootPointers=true)
 ├── CLAUDE.md         # pointer (rootPointers=true)
-├── chats/            # only when includeChats=true
+├── chats/            # only when includeChats=true, from --chats-dir
 └── project/          # verbatim mirror
     ├── <Design>.dc.html  support.js  .thumbnail
     ├── _ds/<ds-slug>-<uuid>/   # the design system, whole

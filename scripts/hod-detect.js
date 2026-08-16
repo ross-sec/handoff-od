@@ -10,7 +10,7 @@
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, slugSafe, childDir, isUnder, walk, symlinkScan, describeUnsafe,
+  args, die, slugSafe, featureSlug, childDir, isUnder, walk, symlinkScan, describeUnsafe,
   readJson, writeState, Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
@@ -151,6 +151,9 @@ const state = {
     feature: a.feature ?? null,
     transport: a.transport ?? "zip",
     includeChats: bool(a["include-chats"], false),
+    // Transcripts are not on disk in the project and these scripts never call MCP,
+    // so the agent exports them and names the directory here.
+    chatsDir: typeof a["chats-dir"] === "string" ? posix(a["chats-dir"]) : null,
     rootPointers: bool(a["root-pointers"], true),
     verification: bool(a.verification, false),
   },
@@ -179,6 +182,31 @@ g.check("no symlink escapes the project — I9", links.unsafe.length === 0,
 if (designSystem?.fonts.length) {
   g.warn("declared fonts have binaries", designSystem.hasFontBinaries,
     designSystem.hasFontBinaries ? "woff2 found" : `declares ${designSystem.fonts.join(", ")} but ships no .woff2 — bundle would not be offline-complete`);
+}
+// Every declared option has to be satisfiable at the phase that records it, or the
+// pipeline promises something a later phase cannot deliver.
+const depth = state.options.depth;
+g.check("depth is a known mode", ["bundle", "spec", "both"].includes(depth), depth);
+// `spec` has nothing to produce without a scope. `both` without one is a legitimate
+// bundle-only run — but say so out loud, because "depth=both, no spec in the output"
+// is precisely the kind of silent degradation this release exists to remove.
+if (depth === "spec") {
+  g.check("a feature scope is set", !!state.options.feature,
+    state.options.feature ?? `depth=spec produces design_handoff_<feature>/ and nothing else — pass --feature "<scope>"`);
+} else if (depth === "both") {
+  g.check("spec nesting is resolved", true, state.options.feature
+    ? `depth=both — design_handoff_${featureSlug(state.options.feature)}/ will be nested in the mirror`
+    : "depth=both with no --feature — bundle only, no spec will be nested");
+}
+g.check("transport is a known mode", ["zip", "mcp", "both"].includes(state.options.transport),
+  state.options.transport);
+if (state.options.includeChats) {
+  g.check("transcript directory given and non-empty",
+    !!state.options.chatsDir && existsSync(state.options.chatsDir) &&
+      walk(state.options.chatsDir).length > 0,
+    state.options.chatsDir
+      ? `${state.options.chatsDir} — ${existsSync(state.options.chatsDir) ? `${walk(state.options.chatsDir).length} file(s)` : "not found"}`
+      : "--include-chats true needs --chats-dir <dir>");
 }
 g.check("state written", existsSync(join(outDir, ".handoff", "state.json")), ".handoff/state.json");
 g.finish();

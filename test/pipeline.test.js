@@ -404,6 +404,151 @@ test("a hand-edited designSystem.dir cannot escape the project", () => {
   assert.match(b.out, /designSystem\.dir .* resolves outside the project/);
 });
 
+/* ── I10: an advertised option is a promise ─────────────────────────────────
+ * `depth` was a declared manifest input that phase 00 wrote into state and nothing
+ * ever read. The documented order ran 01 before 02, so the mirror was snapshotted
+ * before the spec existed and no phase refreshed it: `depth=both` produced an
+ * archive with no spec in it, every gate green. */
+
+/** Author over the skeleton the way the runbook tells the agent to. */
+function authorSpec(proj, dirName) {
+  const readme = join(proj, dirName, "README.md");
+  const authored = readFileSync(readme, "utf8")
+    .split("\n")
+    .map((l) => (/\bTODO\b/.test(l) ? l.replace(/TODO.*/, "Authored by the fixture.") : l))
+    .join("\n");
+  writeFileSync(readme, authored);
+  return readme;
+}
+
+test("depth=both puts the authored spec inside the finished ARCHIVE", () => {
+  const { proj, out } = project();
+  assert.equal(detect(proj, out, ["--entry", "Landing.dc.html", "--depth", "both",
+    "--feature", "Landing Page"]).code, 0);
+
+  // Phase 02 first — this is the ordering the whole bug was about.
+  assert.equal(run("hod-spec.js", [], out).code, 0, "feature comes from state");
+  authorSpec(proj, "design_handoff_landing_page");
+  assert.equal(run("hod-validate.js", ["--spec"], out).code, 0, "--spec with no value uses the feature slug");
+
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  const b = run("hod-bundle.js", ["--force"], out);
+  assert.match(b.out, /PASS {2}authored spec nested in the mirror/);
+
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 0, v.out);
+  assert.match(v.out, /PASS {2}depth=both — authored spec is inside the bundle/);
+  assert.match(v.out, /PASS {2}the nested spec is authored, not a skeleton/);
+  assert.match(v.out, /PASS {2}the nested spec carries its prototypes/);
+
+  assert.equal(run("hod-archive.js", ["--format", "zip"], out).code, 0);
+
+  // The deliverable, read back out of the zip itself — not inferred from the tree.
+  const zip = join(out, "Fixture Project-handoff.zip");
+  const listing = execFileSync(
+    process.platform === "win32" ? "C:\\Windows\\System32\\tar.exe" : "tar",
+    ["-tf", zip], { encoding: "utf8" }).split(/\r?\n/);
+  assert.ok(listing.some((e) => e.endsWith("project/design_handoff_landing_page/README.md")),
+    `spec README missing from the archive:\n${listing.join("\n")}`);
+  assert.ok(listing.some((e) => e.includes("design_handoff_landing_page/prototypes/Landing.dc.html")),
+    "spec prototypes missing from the archive");
+});
+
+test("depth=both refuses to bundle before the spec exists", () => {
+  const { proj, out } = project();
+  detect(proj, out, ["--depth", "both", "--feature", "Landing Page"]);
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2, b.out);
+  assert.match(b.out, /depth=both requires the authored spec to exist before the mirror is taken/);
+  assert.ok(!existsSync(join(out, "fixture-project")), "nothing written");
+});
+
+test("depth=both refuses a spec that is still a skeleton", () => {
+  const { proj, out } = project();
+  detect(proj, out, ["--depth", "both", "--feature", "Landing Page"]);
+  run("hod-spec.js", [], out);                     // scaffold, do NOT author
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2, b.out);
+  assert.match(b.out, /still carries TODO markers/);
+});
+
+test("depth=bundle and depth=spec each refuse the phase they exclude", () => {
+  const bundleOnly = project();
+  detect(bundleOnly.proj, bundleOnly.out, ["--depth", "bundle"]);
+  const s = run("hod-spec.js", ["--feature", "Landing Page"], bundleOnly.out);
+  assert.equal(s.code, 2, s.out);
+  assert.match(s.out, /depth=bundle — phase 02 does not run/);
+
+  const specOnly = project();
+  detect(specOnly.proj, specOnly.out, ["--depth", "spec", "--feature", "Landing Page"]);
+  const b = run("hod-bundle.js", [], specOnly.out);
+  assert.equal(b.code, 2, b.out);
+  assert.match(b.out, /depth=spec — phase 01 does not run/);
+});
+
+test("depth=bundle still ships a bundle, with no spec required", () => {
+  const { proj, out } = project();
+  assert.equal(detect(proj, out, ["--depth", "bundle"]).code, 0);
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  assert.equal(run("hod-validate.js", [], out).code, 0);
+  assert.ok(!readdirSync(join(out, "fixture-project", "project")).some((f) => f.startsWith("design_handoff_")));
+});
+
+/* ── includeChats: the README promised a directory nothing created ──────────── */
+
+test("includeChats copies the transcript and validate confirms it shipped", () => {
+  const { proj, out } = project();
+  const chats = mkdtempSync(join(tmpdir(), "hod-chats-"));
+  writeFileSync(join(chats, "conversation.md"), "# how the design happened\n");
+
+  assert.equal(detect(proj, out, ["--include-chats", "true", "--chats-dir", chats]).code, 0);
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 0, b.out);
+  assert.match(b.out, /PASS {2}conversation transcript included — chats\/ — 1 file/);
+
+  assert.equal(readFileSync(join(out, "fixture-project", "chats", "conversation.md"), "utf8"),
+    "# how the design happened\n");
+
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 0, v.out);
+  assert.match(v.out, /PASS {2}includeChats — transcript is in the bundle/);
+  assert.match(v.out, /PASS {2}root purity/, "chats/ is permitted at root only because it exists");
+});
+
+test("includeChats without a transcript directory fails at phase 00, not silently", () => {
+  const { proj, out } = project();
+  const d = detect(proj, out, ["--include-chats", "true"]);
+  assert.equal(d.code, 1);
+  assert.match(d.out, /FAIL {2}transcript directory given and non-empty/);
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2);
+  assert.match(b.out, /includeChats is on but no transcript directory was given/);
+});
+
+/* ── transport=both was a declared option that emitted one prompt ───────────── */
+
+test("transport=both emits both prompt forms", () => {
+  const { proj, out } = project();
+  detect(proj, out, ["--entry", "Landing.dc.html", "--transport", "both"]);
+  const p = run("hod-prompt.js", [], out);
+  assert.equal(p.code, 0, p.out);
+  assert.match(p.out, /Option A — read it live over MCP/);
+  assert.match(p.out, /Option B — from the archive/);
+  assert.match(p.out, /od mcp install opencode/);
+  assert.match(p.out, /Unzip `Fixture Project-handoff\.zip`/);
+});
+
+test("an unknown transport is refused rather than treated as zip", () => {
+  const { proj, out } = project();
+  detect(proj, out, ["--entry", "Landing.dc.html"]);
+  const p = run("hod-prompt.js", ["--transport", "carrier-pigeon"], out);
+  assert.equal(p.code, 2);
+  assert.match(p.out, /unknown --transport/);
+});
+
 /* ── spec scaffold ─────────────────────────────────────────────────────────── */
 
 test("spec scaffolds a skeleton that fails validation until the TODOs are written", () => {

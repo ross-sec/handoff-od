@@ -3,11 +3,11 @@
 // ships until this exits 0.
 //
 //   node scripts/hod-validate.js [--out <dir>] [--spec <feature-slug>] [--self]
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   args, die, readState, readJson, writeJson, walk, childDir, symlinkScan, describeUnsafe,
-  Gates, TEXTUAL, SYNC_BOOKKEEPING,
+  featureDirName, TODO_MARKER, Gates, TEXTUAL, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { verifyAdherence } from "./_adherence.js";
 
@@ -43,6 +43,22 @@ if (a.self) {
     (manifest?.od?.genui?.surfaces ?? []).every((s) => KINDS.has(s.kind)));
   g.check("no @open-design/* dependency", !JSON.stringify(pkg?.dependencies ?? {}).includes("@open-design"),
     "none publish to npm");
+
+  /* I10 — an advertised option is a promise. `depth` shipped for three releases as a
+   * declared input that phase 00 wrote into state and NOTHING ever read, so
+   * `depth=both` produced a bundle silently missing the spec it advertises. This gate
+   * makes that class structurally impossible: every input in the manifest must be read
+   * back as `options.<name>`, which is the single place a declared option becomes
+   * behaviour. Adding an input without wiring it now fails the packaging check. */
+  const inputs = (manifest?.od?.inputs ?? manifest?.inputs ?? []).map((i) => i.name);
+  const scriptSrc = readdirSync(join(here, "scripts"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => readFileSync(join(here, "scripts", f), "utf8"))
+    .join("\n");
+  const unread = inputs.filter((n) => !new RegExp(`options\\.${n}\\b`).test(scriptSrc));
+  g.check("every declared input is consumed — I10", inputs.length > 0 && unread.length === 0,
+    unread.length ? `declared but never read: ${unread.join(", ")}` : `${inputs.length} inputs, all read`);
+
   g.finish();
   process.exit(0);
 }
@@ -54,9 +70,16 @@ const { project, designSystem, options } = state;
 /* ── spec mode (Mechanism B) ───────────────────────────────────────────────── */
 
 if (a.spec) {
-  const slug = a.spec === true ? (options.feature ?? "") : a.spec;
-  const dir = join(project.dir, `design_handoff_${slug}`);
-  if (!existsSync(dir)) die(`no design_handoff_${slug}/ — run hod-spec.js first`);
+  // `--spec` with no value means "the feature this run is about". That is the
+  // feature's SLUG on disk, not its display string: `--spec` alone used to build
+  // `design_handoff_Landing Page` and report the folder missing.
+  if (a.spec === true && !options.feature) {
+    die(`--spec needs a feature: pass --spec <slug>, or re-run phase 00 with --feature "<scope>"`);
+  }
+  const dirName = a.spec === true ? featureDirName(options.feature) : `design_handoff_${a.spec}`;
+  const slug = dirName.replace(/^design_handoff_/, "");
+  const dir = join(project.dir, dirName);
+  if (!existsSync(dir)) die(`no ${dirName}/ — run hod-spec.js first`);
   const readme = readFileSync(join(dir, "README.md"), "utf8");
   const heads = [...readme.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1].toLowerCase());
 
@@ -129,6 +152,27 @@ g.check("no screenshots at root", !files.some((f) => !f.includes("/") && /\.(png
 // FINISHED bundle contains no symlinks at all. Any left is a hole in the mirror:
 // an archive would flatten or drop it, and the receiving agent would get neither
 // the file nor an error.
+/* The advertised deliverables, checked against the built tree — the archive is made
+ * from this directory, so whatever is missing here is missing from the zip. */
+if ((options.depth ?? "both") === "both" && options.feature) {
+  const specPrefix = `project/${featureDirName(options.feature)}/`;
+  const specFiles = files.filter((f) => f.startsWith(specPrefix));
+  const specReadme = specFiles.find((f) => f === `${specPrefix}README.md`);
+  g.check("depth=both — authored spec is inside the bundle", !!specReadme,
+    specReadme ? `${specPrefix} — ${specFiles.length} file(s)` : `${specPrefix} absent from the mirror`);
+  if (specReadme) {
+    g.check("the nested spec is authored, not a skeleton",
+      !TODO_MARKER.test(readFileSync(join(bundleRoot, specReadme), "utf8")), specReadme);
+    g.check("the nested spec carries its prototypes",
+      specFiles.some((f) => f.startsWith(`${specPrefix}prototypes/`)), `${specPrefix}prototypes/`);
+  }
+}
+if (options.includeChats) {
+  g.check("includeChats — transcript is in the bundle",
+    files.some((f) => f.startsWith("chats/")),
+    `${files.filter((f) => f.startsWith("chats/")).length} file(s) under chats/`);
+}
+
 const bundleLinks = symlinkScan(bundleRoot);
 g.check("no symlinks in the bundle — I9",
   bundleLinks.followed.length === 0 && bundleLinks.unsafe.length === 0,

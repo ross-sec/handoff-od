@@ -10,8 +10,8 @@
 import { existsSync, readFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
-  args, die, readState, readJson, writeText, walk, slugify, slugSafe, childDir, isUnder,
-  Gates, posix, NEVER_SHIP,
+  args, die, readState, readJson, writeText, walk, slugify, childDir, isUnder,
+  featureSlug, featureDirName, Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
 const a = args();
@@ -23,8 +23,16 @@ const { project, entry, designSystem, options } = state;
 const feature = (typeof a.feature === "string" && a.feature) || options.feature;
 if (!feature) die('--feature is required, e.g. --feature "auth system"');
 
-const slug = slugSafe(feature, "feature").replace(/-/g, "_");
-const dir = childDir(project.dir, `design_handoff_${slug}`, "feature slug");
+// `depth` is a real switch, not a label: at depth=bundle this phase does not run.
+const depth = a.depth ?? options.depth ?? "both";
+if (depth === "bundle") {
+  die(`depth=bundle — phase 02 does not run at this depth.\n` +
+    `  Re-run phase 00 with --depth both (nest the spec inside the bundle) or --depth spec\n` +
+    `  (author the spec alone), or pass --depth both to this script to override.`);
+}
+
+const slug = featureSlug(feature);
+const dir = childDir(project.dir, featureDirName(feature), "feature slug");
 mkdirSync(join(dir, "prototypes"), { recursive: true });
 mkdirSync(join(dir, "reference"), { recursive: true });
 

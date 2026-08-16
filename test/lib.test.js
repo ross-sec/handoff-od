@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { symlinkSync } from "node:fs";
 import { slugify, slugSafe, walk, symlinkScan, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
 
@@ -213,6 +214,26 @@ test("a symlink loop terminates instead of recursing forever", { skip: !(LINKS.d
 test("the symlink suite actually ran somewhere", () => {
   assert.ok(LINKS.file || LINKS.dir || LINKS.junction,
     "no symlink kind could be created — I9 coverage would be vacuous on this machine");
+});
+
+/* ── I10: every advertised option is wired to behaviour ─────────────────────
+ * `depth` shipped for three releases as a declared manifest input that phase 00
+ * wrote into state and nothing ever read. The gate is structural, so the next
+ * unwired input fails here rather than in a reviewer's hands. */
+
+test("every input declared in open-design.json is read back by a script", () => {
+  const here = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const manifest = JSON.parse(readFileSync(join(here, "open-design.json"), "utf8"));
+  const inputs = (manifest.od?.inputs ?? manifest.inputs ?? []).map((i) => i.name);
+  assert.ok(inputs.length, "the manifest declares inputs");
+
+  const src = readdirSync(join(here, "scripts"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => readFileSync(join(here, "scripts", f), "utf8"))
+    .join("\n");
+
+  const unread = inputs.filter((n) => !new RegExp(`options\\.${n}\\b`).test(src));
+  assert.deepEqual(unread, [], `declared but never read: ${unread.join(", ")}`);
 });
 
 /* ── the silent-corruption regression ──────────────────────────────────────

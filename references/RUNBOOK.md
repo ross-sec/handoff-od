@@ -30,8 +30,8 @@ node $PLUGIN/scripts/hod-detect.js \
   --project-name "<NAME>" \
   --project-dir "<DIR>" \
   [--entry "<FILE>"] \
-  [--depth bundle|spec|both] [--transport zip|mcp|both] \
-  [--include-chats true] [--root-pointers false] [--verification true] \
+  [--depth bundle|spec|both] [--feature "<SCOPE>"] [--transport zip|mcp|both] \
+  [--include-chats true --chats-dir "<DIR>"] [--root-pointers false] [--verification true] \
   [--out "$OUT"]
 ```
 
@@ -45,29 +45,18 @@ Read the gate block. Then:
 | `... (collapsed, N components, M alias)` | published-library DS | nothing |
 | `... (expanded, ...)` | project-local DS | nothing |
 | `WARN declared fonts have binaries` | the DS names fonts but ships no `.woff2` | note it for the final report |
+| `FAIL a feature scope is set` | `depth` includes `spec` but no `--feature` | ask the user for the scope, re-run 00 |
+| `FAIL transcript directory` | `--include-chats true` without a usable `--chats-dir` | export the transcript and pass the directory, or drop the flag |
 | `FAIL` anything | **stop** | fix the input and re-run |
 
 ---
 
-## Step 3 — phase 01, bundle  *(skip when depth=spec)*
+## Step 3 — phase 02, spec  *(skip when depth=bundle)*
 
-```
-node $PLUGIN/scripts/hod-bundle.js [--out "$OUT"] [--force]
-```
-
-`--force` is required to rebuild over an existing `<slug>/`.
-
-All gates must read `PASS`. In particular:
-
-- `project mirrored verbatim — N/N files` — the two numbers must match.
-- `design-system alias present` — appears only when aliases exist; if it fails, the prototypes
-  will render unstyled. Do not proceed.
-- `adherence config present — generated (N rules, M components)` or `— mirrored`.
-  `mirrored` means the source already had one and it was copied byte-for-byte. Both are correct.
-
----
-
-## Step 4 — phase 02, spec  *(skip when depth=bundle)*
+**This runs before the bundle, not after it.** Phase 02 writes into the *source project*; phase 01
+takes one verbatim snapshot of that project and nothing refreshes it afterwards. Bundle first and
+the spec never reaches the archive — silently, with every gate still green. Phase 01 refuses at
+`depth=both` until this step is finished, so the order is enforced, not merely advised.
 
 ```
 node $PLUGIN/scripts/hod-spec.js --feature "<SCOPE>" [--files "a.html,b.html"] [--out "$OUT"]
@@ -83,13 +72,39 @@ every `TODO`. Read `references/spec-sections.md` first. Rules that fail review i
 5. Specify algorithms, not adjectives.
 6. Do not delete a pre-filled token table, asset list or file tree; extend them.
 
+Confirm it before moving on — phase 01 will refuse a skeleton:
+
+```
+node $PLUGIN/scripts/hod-validate.js --spec [--out "$OUT"]      # --spec alone uses --feature
+```
+
+---
+
+## Step 4 — phase 01, bundle  *(skip when depth=spec)*
+
+```
+node $PLUGIN/scripts/hod-bundle.js [--out "$OUT"] [--force]
+```
+
+`--force` is required to rebuild over an existing `<slug>/`.
+
+All gates must read `PASS`. In particular:
+
+- `project mirrored verbatim — N/N files` — the two numbers must match.
+- `design-system alias present` — appears only when aliases exist; if it fails, the prototypes
+  will render unstyled. Do not proceed.
+- `adherence config present — generated (N rules, M components)` or `— mirrored`.
+  `mirrored` means the source already had one and it was copied byte-for-byte. Both are correct.
+- `authored spec nested in the mirror` — appears at `depth=both` with a feature set. If this is
+  missing you built out of order; finish step 3 and re-run with `--force`.
+- `conversation transcript included` — appears when `includeChats=true`.
+
 ---
 
 ## Step 5 — phase 03, validate
 
 ```
 node $PLUGIN/scripts/hod-validate.js [--out "$OUT"] [--strict]
-node $PLUGIN/scripts/hod-validate.js --spec <feature-slug> [--out "$OUT"]     # when depth includes spec
 ```
 
 - `FAIL` -> fix and re-run. Never continue.
@@ -146,6 +161,11 @@ Never report success while any phase printed `BLOCKED`.
 | `<slug>/ already exists` | rebuilding | add `--force` |
 | `phase 03 has not passed` | archiving before validating | run 03; fix any `FAIL` |
 | `no working zip writer` | no bsdtar / Info-ZIP on PATH | `--format targz`, or install `zip` |
-| `mirrored N/M files` mismatch | source changed mid-run | re-run 00 then 01 `--force` |
+| `mirrored N/M files` mismatch | a file could not be copied — permissions, or it vanished mid-copy | fix the source, re-run 01 `--force` |
 | adherence disagrees with manifest | hand-edited config | delete it and re-run 01 `--force` |
 | `prop rule for unknown component` | manifest and `components/` out of sync | re-export the DS from Open Design |
+| `depth=both requires the authored spec` | built in the old order — 01 before 02 | finish step 3, then re-run 01 `--force` |
+| `still carries TODO markers` | the spec is a skeleton | author it, confirm with `--spec`, re-run 01 `--force` |
+| `depth=spec — phase 01 does not run` | wrong depth for what you want | re-run 00 with `--depth both` |
+| `includeChats is on but no transcript directory` | `--include-chats` without `--chats-dir` | pass the directory, or `--include-chats false` |
+| I9 `refusing to mirror … symlink(s)` | the project links outside itself | remove the links, or replace them with real copies |

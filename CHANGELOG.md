@@ -2,6 +2,61 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.6] - 2026-08-16
+
+Found in review round 3 of the Open Design catalog submission (nexu-io/open-design#6948). The
+reported symptom was one option; the audit it prompted found that **three of the six declared inputs
+did not do what the manifest advertised**.
+
+### Added
+
+- **I10 — an advertised option is a promise: every declared input is wired to behaviour and checked
+  by a gate.** Documented in `references/bundle-contract.md`, enforced two ways: `hod-validate.js
+  --self` and the test suite both assert that every input in `open-design.json` is read back as
+  `options.<name>`, and each option is additionally asserted in the *built tree* rather than inferred
+  from the fact that a phase ran. Verified retroactively: `depth` had **zero** reads on 0.1.5.
+
+### Fixed
+
+- **`depth` did nothing at all.** It was a declared manifest input that phase 00 wrote into
+  `state.json` and no script ever read. Compounding it, the documented order ran phase 01 before
+  phase 02: phase 02 writes the spec into the *source project*, phase 01 takes one verbatim snapshot
+  of that project, and no later phase refreshes it — so `depth=both` produced an archive with no
+  spec in it while every gate reported `PASS`. Now:
+  - phase 02 runs **before** phase 01, in `SKILL.md` and `RUNBOOK.md`;
+  - phase 01 refuses at `depth=both` unless the authored, TODO-free spec already exists, so the
+    ordering is enforced rather than merely written down — and refuses *before* the `--force` delete;
+  - phase 01 gates `authored spec nested in the mirror`, phase 03 re-checks it against the directory
+    the archive is built from, including that it is authored and carries its prototypes;
+  - `depth=spec` makes phase 01 refuse, `depth=bundle` makes phase 02 refuse. Both used to run.
+
+- **`includeChats` promised a directory nothing created.** It was read only to add a `chats/` line to
+  the README and permit `chats` at bundle root; no phase ever wrote one. A bundle built with it on
+  shipped a README naming a path the bundle did not contain. Transcripts are not on disk in the
+  project and these scripts never call MCP, so the agent now supplies `--chats-dir`, phase 01 mirrors
+  it to `<slug>/chats/`, and phases 00, 01 and 03 each refuse if the option is on without one.
+
+- **`transport=both` emitted one prompt.** It is a declared option, and it fell through to the `zip`
+  branch — so the manifest advertised a choice of two and the user got one. It now emits both,
+  labelled. An unrecognised transport is refused instead of silently treated as `zip`.
+
+- **`hod-validate.js --spec` with no value used the feature's display string, not its slug** — it
+  looked for `design_handoff_Landing Page` and reported the folder missing. The
+  `design_handoff_<slug>` name is now derived by one shared helper that all three phases call.
+
+- **The verbatim-mirror gate compared against a stale count.** It used the file count recorded at
+  detect time, which is wrong once the source legitimately grows between phases; it now counts the
+  source at mirror time, through the same walk policy, and reports the drift.
+
+### Tests
+
+- 10 new tests (64 total, green on Linux and Windows), including the end-to-end `depth=both` fixture
+  this round asked for: it runs the full 00 → 02 → author → 01 → 03 → 04 sequence and then reads the
+  **finished archive's** entry list back to assert the spec README and its prototypes are inside it.
+  Also: both refusal paths at `depth=both`, the `depth=bundle` / `depth=spec` exclusions,
+  `includeChats` copying and failing, `transport=both` emitting both forms, an unknown transport
+  being refused, and the structural check that every declared input is read.
+
 ## [0.1.5] - 2026-08-16
 
 Found in review round 2 of the Open Design catalog submission (nexu-io/open-design#6948).

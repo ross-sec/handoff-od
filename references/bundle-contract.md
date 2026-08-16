@@ -141,6 +141,7 @@ Likewise: never `HANDOFF.md`, never `IMPLEMENTATION.md`. The instruction file is
 | I7 | Adherence config only when a design system is bound; derived, never hand-written |
 | I8 | Archive only after phase 03 writes `ok: true` |
 | I9 | Nothing outside the project directory is ever mirrored, named or read |
+| I10 | An advertised option is a promise: every declared input is wired to behaviour and checked by a gate |
 
 ### I9 in practice
 
@@ -163,3 +164,30 @@ The same rule covers raw path input, which bypasses the walker entirely: `--entr
 `designSystem.dir` is re-checked when read back from `state.json`. Phase 03 then
 asserts the finished bundle contains no symlinks at all — any survivor is a hole the
 archive would flatten or drop.
+
+An explicitly supplied `--chats-dir` is the one path allowed to sit outside the
+project. I9 governs what the tool *discovers*; that directory is named by the
+operator, and the transcript it holds does not live in the project on disk.
+
+### I10 in practice
+
+`depth` shipped for three releases as a declared input that phase 00 wrote into
+`state.json` and **nothing ever read**. The documented order ran phase 01 before
+phase 02, so the mirror was snapshotted before the spec existed and no phase
+refreshed it: `depth=both` produced an archive with no spec in it, and every gate
+still reported `PASS`. `includeChats` was worse in kind — it was read, but only to
+add a `chats/` line to the README and permit `chats` at bundle root, while nothing
+ever created the directory. The README named a path the bundle did not contain.
+
+Two mechanisms keep that from recurring:
+
+1. **Structural.** `hod-validate.js --self` and the test suite both assert that every
+   input in `open-design.json` is read back somewhere as `options.<name>`. Declaring
+   an input without wiring it fails the packaging check.
+2. **Behavioural.** Each option is asserted in the *built tree*, not inferred from the
+   fact that a phase ran: phase 01 gates `authored spec nested in the mirror` and
+   `conversation transcript included`, and phase 03 re-checks both against the
+   directory the archive is made from.
+
+The structural check is necessary, not sufficient — `includeChats` would have passed
+it. The behavioural gates are what caught that one.

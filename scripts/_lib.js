@@ -40,6 +40,19 @@ export function slugSafe(name, prefix = "project") {
 }
 
 /**
+ * The `design_handoff_<slug>` directory name for a feature scope.
+ *
+ * Shared because three phases derive it independently — 02 creates the folder, 01
+ * has to find it to nest it, 03 has to find it to validate it — and a second
+ * implementation is a second chance for them to disagree about where it lives.
+ */
+export const featureSlug = (feature) => slugSafe(feature, "feature").replace(/-/g, "_");
+export const featureDirName = (feature) => `design_handoff_${featureSlug(feature)}`;
+
+/** A spec README still carrying scaffold markers is not an authored spec. */
+export const TODO_MARKER = /\bTODO\b/;
+
+/**
  * A directory that MUST be a strict descendant of `root`. Guards every path the
  * pipeline later deletes or writes a whole tree into.
  *

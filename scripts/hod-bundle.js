@@ -11,7 +11,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   args, die, readState, readJson, writeJson, writeText, copyTree, walk,
-  childDir, isUnder, symlinkScan, describeUnsafe, Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
+  childDir, isUnder, symlinkScan, describeUnsafe, featureDirName, TODO_MARKER,
+  Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { buildAdherence, collectComponents } from "./_adherence.js";
 
@@ -22,6 +23,39 @@ const state = readState(outRoot);
 if (!state) die("no .handoff/state.json — run hod-detect.js first");
 
 const { project, entry, designSystem, options } = state;
+const depth = a.depth ?? options.depth ?? "both";
+
+if (depth === "spec") {
+  die(`depth=spec — phase 01 does not run at this depth. The deliverable is\n` +
+    `  ${project.dir}/${options.feature ? featureDirName(options.feature) : "design_handoff_<feature>"}/ alone.\n` +
+    `  Re-run phase 00 with --depth both to nest that spec inside a bundle.`);
+}
+
+/* ── depth=both nests mechanism B inside mechanism A ────────────────────────
+ * The mirror below is a single verbatim snapshot and no later phase refreshes it,
+ * so the authored spec has to exist in the SOURCE project before it is taken.
+ * Building 01 before 02 yields a bundle that silently lacks the spec: the archive
+ * is produced, every gate passes, and the advertised deliverable is simply absent.
+ * Enforced here rather than left to the runbook — ordering that is documented but
+ * unchecked is exactly how it went wrong. */
+
+if (depth === "both" && options.feature) {
+  const specReadme = join(project.dir, featureDirName(options.feature), "README.md");
+  const remedy =
+    `  Run phase 02 first, author the spec over its TODO markers, then re-run this phase:\n` +
+    `    node scripts/hod-spec.js --feature ${JSON.stringify(options.feature)} --out ${outRoot}\n` +
+    `  Or re-run phase 00 with --depth bundle if the spec is not part of this handoff.`;
+
+  if (!existsSync(specReadme)) {
+    die(`depth=both requires the authored spec to exist before the mirror is taken.\n` +
+      `  Missing: ${specReadme}\n${remedy}`);
+  }
+  if (TODO_MARKER.test(readFileSync(specReadme, "utf8"))) {
+    die(`depth=both requires the spec to be AUTHORED, not scaffolded.\n` +
+      `  ${specReadme} still carries TODO markers, and a bundle must not ship a skeleton.\n${remedy}`);
+  }
+}
+
 // `--force` below is a recursive delete: resolve the target through the guard so a
 // slug that is empty, `.`, absolute, or climbs out of outRoot can never name it.
 const bundleRoot = childDir(outRoot, project.slug, "project slug");
@@ -48,6 +82,30 @@ mkdirSync(bundleRoot, { recursive: true });
 /* ── 1. verbatim mirror (I1: never rename, never re-suffix, never reformat) ─ */
 
 const mirrored = copyTree(project.dir, join(bundleRoot, "project"), { exclude: NEVER_SHIP });
+
+/* ── 1b. the conversation transcript ────────────────────────────────────────
+ * `includeChats` used to add a `chats/` line to the README and permit `chats` at
+ * bundle root — while nothing ever created the directory. The README promised a
+ * path the bundle did not contain.
+ *
+ * Transcripts are not on disk in the project (they live in the daemon) and these
+ * scripts never call MCP, so the agent exports them and passes the directory in.
+ * That explicit hand-off is also why this is not an I9 violation: the operator
+ * named the path, the walker did not discover it. */
+
+let chats = 0;
+if (options.includeChats) {
+  if (!options.chatsDir) {
+    die(`includeChats is on but no transcript directory was given.\n` +
+      `  Export the conversation from Open Design, then re-run phase 00 with\n` +
+      `    --include-chats true --chats-dir "<dir>"\n` +
+      `  or with --include-chats false. A README that names \`${project.slug}/chats/\` must not\n` +
+      `  ship over a bundle that has no such directory.`);
+  }
+  if (!existsSync(options.chatsDir)) die(`--chats-dir no longer exists: ${options.chatsDir}`);
+  chats = copyTree(options.chatsDir, join(bundleRoot, "chats"), { exclude: NEVER_SHIP }).length;
+  if (!chats) die(`--chats-dir is empty: ${options.chatsDir}`);
+}
 
 /* ── 2. adherence config ───────────────────────────────────────────────────
  * Present in the source? Keep it byte-for-byte — the mirror is authoritative.
@@ -158,14 +216,33 @@ writeJson(join(outRoot, ".handoff", "bundle.json"), {
 const g = new Gates("01 bundle");
 g.check("no unfilled README slots", !/\{\{[A-Z_]+\}\}/.test(readme),
   (readme.match(/\{\{[A-Z_]+\}\}/g) ?? []).join(" "));
-g.check("project mirrored verbatim", mirrored.length === project.fileCount,
-  `${mirrored.length}/${project.fileCount} files`);
+/* Counted against the source AS IT IS NOW, not against the detect-time snapshot.
+ * "Verbatim" means the mirror equals the source at the moment it was taken, and at
+ * depth=both the source legitimately grows between phases — phase 02 writes the spec
+ * folder into it. Comparing to the stale number failed a correct bundle. A genuine
+ * copy failure still fails, because both numbers come from the same walk policy. */
+const sourceNow = walk(project.dir, { exclude: NEVER_SHIP }).length;
+g.check("project mirrored verbatim", mirrored.length === sourceNow,
+  `${mirrored.length}/${sourceNow} files` +
+  (sourceNow === project.fileCount ? "" : ` (${project.fileCount} at detect; source grew by ${sourceNow - project.fileCount})`));
 g.check("no re-suffixed sources", !bundleFiles.some((f) => /\.(jsx|d\.ts)\.txt$/i.test(f)), "I1");
 g.check("no sync bookkeeping", !bundleFiles.some((f) => SYNC_BOOKKEEPING.test(f)), "I4 — _ds_sync.json / _ods_sync.json / _ods_needs_recompile");
 g.check("no symlink escapes the project — I9", true,
   links.followed.length
     ? `${links.followed.length} internal link(s) materialized as their target's content`
     : "no symlinks");
+
+// The advertised deliverable of depth=both, asserted in the built tree rather than
+// assumed from the fact that phase 02 was run at some point.
+if (depth === "both" && options.feature) {
+  const specPrefix = `project/${featureDirName(options.feature)}/`;
+  const specFiles = bundleFiles.filter((f) => f.startsWith(specPrefix));
+  g.check("authored spec nested in the mirror", specFiles.some((f) => f.endsWith("/README.md")),
+    specFiles.length ? `${specPrefix} — ${specFiles.length} file(s)` : `${specPrefix} missing`);
+}
+if (options.includeChats) {
+  g.check("conversation transcript included", chats > 0, `chats/ — ${chats} file(s)`);
+}
 
 if (designSystem) {
   const dsPrefix = designSystem.dir === "." ? "project/" : `project/${designSystem.dir}/`;

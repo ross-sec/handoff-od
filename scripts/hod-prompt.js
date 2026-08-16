@@ -86,25 +86,36 @@ const ROUND_TRIP =
   `\nWhen the implementation is running, changes can be synced back to Open Design with ` +
   `\`@ross-sec/sync-od\` — the return leg of this handoff.\n`;
 
-let prompt;
-if (transport === "mcp") {
-  prompt =
-    `Use the Open Design MCP (stdio: \`od mcp\`; install with \`od mcp install ${agent}\`) to read this project:\n` +
-    `${project.name}\n\n` +
-    (focus.length ? `Focus on these files (the whole project is readable):\n${bullets(focus)}\n\n` : "") +
-    (imports.length ? `Also read these files the selection imports:\n${bullets(imports)}\n\n` : "") +
-    `Implement: ${target}\n` + ROUND_TRIP;
-} else {
+if (!["mcp", "zip", "both"].includes(transport)) {
+  die(`unknown --transport "${transport}" — expected mcp, zip or both`);
+}
+
+const mcpPrompt = () =>
+  `Use the Open Design MCP (stdio: \`od mcp\`; install with \`od mcp install ${agent}\`) to read this project:\n` +
+  `${project.name}\n\n` +
+  (focus.length ? `Focus on these files (the whole project is readable):\n${bullets(focus)}\n\n` : "") +
+  (imports.length ? `Also read these files the selection imports:\n${bullets(imports)}\n\n` : "") +
+  `Implement: ${target}\n` + ROUND_TRIP;
+
+const zipPrompt = () => {
   // Bare filename, not the absolute path it happens to sit at here — the prompt is
   // pasted into an agent that may be on another machine entirely.
   const archiveMeta = readJson(join(outRoot, ".handoff", "archive.json"));
   const zip = basename(archiveMeta?.written?.find((w) => w.format === "zip")?.path ?? `${project.name}-handoff.zip`);
-  prompt =
-    `Unzip \`${zip}\` into your repo, then read \`${project.slug}/README.md\` in full and follow it.\n\n` +
+  return `Unzip \`${zip}\` into your repo, then read \`${project.slug}/README.md\` in full and follow it.\n\n` +
     (focus.length ? `Focus on these files (the whole project is in the bundle):\n${bullets(focus)}\n\n` : "") +
     (imports.length ? `Also read these files the selection imports:\n${bullets(imports)}\n\n` : "") +
     `Implement: ${target}\n` + ROUND_TRIP;
-}
+};
+
+// `both` is a declared transport, and it used to fall through to the zip branch —
+// emitting one prompt while the manifest advertised a choice of two. It now emits
+// both, labelled, so the user can pick the one their agent can actually use.
+const prompt =
+  transport === "mcp" ? mcpPrompt() :
+  transport === "zip" ? zipPrompt() :
+  `## Option A — read it live over MCP (nothing to unpack, never stale)\n\n${mcpPrompt()}\n` +
+  `\n## Option B — from the archive (for an agent elsewhere or offline)\n\n${zipPrompt()}`;
 
 writeText(join(outRoot, ".handoff", "prompt.txt"), prompt);
 console.log(prompt);
