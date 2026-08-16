@@ -122,8 +122,14 @@ Phase 04 will refuse to run until this writes `ok: true`.
 node $PLUGIN/scripts/hod-archive.js [--out "$OUT"] [--format zip|targz|both]
 ```
 
-Both gates must read `PASS`. The script verifies real zip magic bytes, so a `FAIL` here means no
-working zip writer was found — install Info-ZIP `zip`, or use `--format targz`.
+Both gates must read `PASS`.
+
+- `zip carries exactly the validated bytes — N/N files, every one byte-identical to the verdict`.
+  Phase 04 decodes the finished archive and compares the sha256 of every file inside it against
+  the per-file digests phase 03 recorded. A `FAIL` naming *altered* contents means something wrote
+  to the bundle while the archiver was reading it — check nothing else is working in `$OUT`, then
+  re-run 03 and 04. A failed archive is deleted, so there is nothing half-finished to pick up.
+- No working zip writer produces a different `FAIL` — install Info-ZIP `zip`, or use `--format targz`.
 
 ---
 
@@ -162,7 +168,7 @@ Never report success while any phase printed `BLOCKED`.
 | `phase 03 has not passed` | archiving before validating, or after a rebuild cleared the verdict | run 03; fix any `FAIL` |
 | `the bundle changed after it was validated` | the tree was edited after 03 | run 03 again — it re-checks root purity, symlinks, spec and adherence |
 | `the verdict predates tree binding` | verdict written by ≤ 0.1.6 | run 03 again |
-| `carries exactly the validated tree` fails | the archiver dropped or added entries | check disk space and the zip writer, then re-run 04 |
+| `carries exactly the validated bytes` fails | the archiver dropped, added or altered a file — including something else writing in the output tree during phase 04 | make sure nothing else is touching the bundle, run 03, then 04 again |
 | `no working zip writer` | no bsdtar / Info-ZIP on PATH | `--format targz`, or install `zip` |
 | `mirrored N/M files` mismatch | a file could not be copied — permissions, or it vanished mid-copy | fix the source, re-run 01 `--force` |
 | adherence disagrees with manifest | hand-edited config | delete it and re-run 01 `--force` |

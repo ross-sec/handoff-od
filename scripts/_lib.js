@@ -7,6 +7,7 @@ import {
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { gunzipSync, inflateRawSync } from "node:zlib";
 
 export const STATE_DIR = ".handoff";
 export const STATE_PATH = join(STATE_DIR, "state.json");
@@ -324,35 +325,123 @@ export function archive(parentDir, rootName, outFile) {
  * Entry count of an existing archive. Zip is read from its End-of-Central-Directory
  * record rather than shelled out, so it does not depend on which tar is on PATH.
  */
-export function archiveEntries(outFile) {
-  if (!outFile.toLowerCase().endsWith(".zip")) {
-    const { exe, extra } = resolveTar();
-    return run(exe, [...extra, "-tzf", outFile], dirname(outFile)).toString()
-      .split(/\r?\n/).map((l) => l.trim().replace(/^\.\//, "")).filter(Boolean);
-  }
-  const buf = readFileSync(outFile);
+/**
+ * Every regular file inside an archive, as `name -> bytes`.
+ *
+ * Decoded here rather than by shelling out to an extractor, for two reasons. The
+ * portable one: GNU tar cannot list or read a zip, so `tar -tf` answers on Windows
+ * (bsdtar) and fails on Linux. The load-bearing one: this is the check that says the
+ * archive holds the bytes phase 03 approved, and running it through the same external
+ * tool family that wrote the archive would let one lying tool vouch for another.
+ */
+function zipContents(buf) {
+  const files = new Map();
   let eocd = -1;
   const floor = Math.max(0, buf.length - 22 - 65535);
   for (let i = buf.length - 22; i >= floor; i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   }
-  if (eocd < 0) return [];
+  if (eocd < 0) throw new Error("not a zip: no end-of-central-directory record");
 
   const count = buf.readUInt16LE(eocd + 10);
-  const names = [];
   let p = buf.readUInt32LE(eocd + 16);
+
   for (let n = 0; n < count && p + 46 <= buf.length; n++) {
     if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const uncompSize = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
-    names.push(buf.toString("utf8", p + 46, p + 46 + nameLen).replace(/^\.\//, ""));
+    const localOffset = buf.readUInt32LE(p + 42);
+    const name = buf.toString("utf8", p + 46, p + 46 + nameLen).replace(/^\.\//, "");
     p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+
+    if (name.endsWith("/")) continue;
+    // Zip64 puts the real sizes in an extra field. Refuse rather than verify the
+    // wrong bytes — a handoff bundle that large is a different problem anyway.
+    if (compSize === 0xffffffff || uncompSize === 0xffffffff || localOffset === 0xffffffff) {
+      throw new Error(`zip64 entry not supported for verification: ${name}`);
+    }
+    if (buf.readUInt32LE(localOffset) !== ZIP_MAGIC) {
+      throw new Error(`corrupt local header for ${name}`);
+    }
+    const start = localOffset + 30 + buf.readUInt16LE(localOffset + 26) + buf.readUInt16LE(localOffset + 28);
+    const raw = buf.subarray(start, start + compSize);
+    if (method !== 0 && method !== 8) throw new Error(`unsupported compression ${method} for ${name}`);
+    files.set(name, method === 0 ? Buffer.from(raw) : inflateRawSync(raw));
   }
-  return names;
+  return files;
 }
 
-/** File entries only — directory markers are not deliverables. */
-export const archiveEntryCount = (outFile) =>
-  archiveEntries(outFile).filter((e) => !e.endsWith("/")).length;
+const cstr = (buf, off, len) => {
+  const s = buf.subarray(off, off + len);
+  const end = s.indexOf(0);
+  return s.toString("utf8", 0, end === -1 ? s.length : end);
+};
+
+function tarContents(buf) {
+  const files = new Map();
+  let override = null;                       // from a GNU 'L' or pax 'x' header
+
+  for (let p = 0; p + 512 <= buf.length;) {
+    const head = buf.subarray(p, p + 512);
+    if (head.every((b) => b === 0)) break;
+
+    const size = parseInt(cstr(head, 124, 12).trim() || "0", 8) || 0;
+    const type = String.fromCharCode(head[156] || 0x30);
+    const dataStart = p + 512;
+    const next = dataStart + Math.ceil(size / 512) * 512;
+
+    if (type === "L") {                      // GNU long name
+      override = cstr(buf, dataStart, size);
+      p = next; continue;
+    }
+    if (type === "x" || type === "X" || type === "g") {   // pax extended header
+      const rec = buf.toString("utf8", dataStart, dataStart + size);
+      const m = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(rec);
+      if (m) override = m[1];
+      p = next; continue;
+    }
+
+    const prefix = cstr(head, 345, 155);
+    const raw = cstr(head, 0, 100);
+    const name = (override ?? (prefix ? `${prefix}/${raw}` : raw)).replace(/^\.\//, "");
+    override = null;
+
+    if ((type === "0" || type === "\0") && !name.endsWith("/")) {
+      files.set(name, Buffer.from(buf.subarray(dataStart, dataStart + size)));
+    }
+    p = next;
+  }
+  return files;
+}
+
+export const archiveContents = (outFile) => {
+  const buf = readFileSync(outFile);
+  return outFile.toLowerCase().endsWith(".zip") ? zipContents(buf) : tarContents(gunzipSync(buf));
+};
+
+/** Regular-file entry names. Directory markers are not deliverables. */
+export const archiveEntries = (outFile) => [...archiveContents(outFile).keys()];
+
+export const archiveEntryCount = (outFile) => archiveContents(outFile).size;
+
+/**
+ * `name -> sha256` for every regular file the archive actually carries.
+ *
+ * This is what closes the gap between "the tree was valid when I looked" and "the
+ * deliverable holds those bytes": phase 04 hashes the tree, then hands the directory
+ * to an external archiver, and anything — another agent in the output tree, a racing
+ * build, a substituted tool — can change a file in between. Comparing entry NAMES
+ * cannot see that; comparing the archive's own bytes can.
+ */
+export function archiveFileDigests(outFile) {
+  const out = {};
+  for (const [name, data] of archiveContents(outFile)) {
+    out[name] = createHash("sha256").update(data).digest("hex");
+  }
+  return out;
+}
 
 /* ── binding a verdict to the tree it inspected ─────────────────────────── */
 
@@ -368,14 +457,17 @@ export const archiveEntryCount = (outFile) =>
  */
 export function hashTree(root) {
   const files = walk(root);
+  const digests = {};
   const h = createHash("sha256");
   for (const rel of files) {
+    const sha = createHash("sha256").update(readFileSync(join(root, rel))).digest("hex");
+    digests[rel] = sha;
     h.update(rel, "utf8");
     h.update("\0");
-    h.update(createHash("sha256").update(readFileSync(join(root, rel))).digest());
+    h.update(sha, "hex");
     h.update("\n");
   }
-  return { hash: h.digest("hex"), files };
+  return { hash: h.digest("hex"), files, digests };
 }
 
 /**

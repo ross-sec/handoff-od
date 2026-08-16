@@ -216,6 +216,9 @@ writeJson(join(outRoot, ".handoff", "validate.json"), {
   ok: g.passed,
   treeHash: inspected.hash,
   fileCount: inspected.files.length,
+  // Per-file, so phase 04 can compare the bytes it actually wrote into the archive
+  // against the bytes inspected here — and name the file when they differ.
+  digests: inspected.digests,
   gates: g.rows,
 });
 

@@ -2,6 +2,48 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.8] - 2026-08-16
+
+Found in review round 5 of the Open Design catalog submission (nexu-io/open-design#6948).
+**Anyone on 0.1.7 or earlier should upgrade** — phase 04 could produce a passing archive whose
+bytes were never validated.
+
+### Fixed
+
+- **The tree could change between the pre-archive digest check and the archiver reading it.** 0.1.7
+  computed `hashTree(bundleRoot)` before invoking the external archiver, then verified only the
+  archive's entry *names* afterwards. The directory stays writable in between — by another agent
+  working in the output tree, by a racing build, by a substituted tool — so a file could be replaced
+  with different content under the same name and land in the archive with every gate green.
+
+  Phase 03 now records a **per-file** sha256, and phase 04 decodes the finished archive and compares
+  the hash of every regular file it actually contains against that record. Three failure modes are
+  reported separately: missing, unexpected, and *contents that are not what phase 03 validated*.
+
+- **A failed archive was left on disk.** A non-zero exit is not enough when the file is still sitting
+  there looking finished. An archive that fails verification is now deleted, along with
+  `archive.json`.
+
+### Changed
+
+- Archives are decoded **in-process** — zip central directory plus `inflateRaw`, tar via `gunzip` and
+  512-byte headers including GNU `L` and pax `x` long names — rather than by shelling out. Partly
+  portability, since GNU tar cannot read a zip; mostly independence, because running the check
+  through the same external tool family that wrote the archive would let one lying tool vouch for
+  another. Zip64 entries are refused rather than mis-verified.
+- `archiveEntries` / `archiveEntryCount` now report regular files only, from the same decoder.
+
+### Tests
+
+- 2 new tests (77 total; 76 run on Windows, all 77 on Linux). The fixture this round asked for uses
+  a `tar` shim placed ahead of the real one on `PATH`: it mutates a bundle file when phase 04 invokes
+  it, then delegates to the real tar — so the mutation lands *after* the pre-archive check and
+  *before* the archiver reads. It asserts the shim really did mutate the tree, that phase 04 refuses,
+  and that no archive is left behind. It is skipped on Windows, where `resolveTar()` deliberately
+  uses the absolute System32 bsdtar and `PATH` cannot intercept it; CI runs Linux, where it was
+  reported. A second, platform-independent test proves the same guarantee by altering bytes inside a
+  finished archive and showing the read-back digest no longer matches the verdict.
+
 ## [0.1.7] - 2026-08-16
 
 Found in review round 4 of the Open Design catalog submission (nexu-io/open-design#6948).

@@ -162,10 +162,27 @@ Two independent mechanisms, because either alone leaves a hole:
    edit phase 01 never saw. Content only — no mtimes, no build timestamps — so an
    identical rebuild stays valid and a changed one does not.
 
-Phase 04 additionally reads each archive back and compares its file entries to the
-validated set. A count comparison would accept an archive that dropped one file and
-gained another; only the set answers "is this the thing phase 03 passed?". And
-because the digest walk refuses unsafe symlinks, a link planted after validation
+Neither mechanism proves the *archiver* read the tree they vouch for. Between
+`hashTree` and the archiver's `open()` the directory is still writable — by another
+agent working in the output tree, by a racing build, by a substituted tool — so a
+file can be swapped under the same name and land in the archive. Comparing entry
+names cannot see that, and comparing counts is weaker still: it accepts an archive
+that dropped one file and gained another.
+
+So phase 03 records a **per-file** digest, and phase 04 decodes the finished archive
+and compares the sha256 of every regular file it actually contains against that
+record. Three failure modes are reported separately — missing, unexpected, and
+"contents that are not what phase 03 validated". An archive that fails is **deleted**,
+along with `archive.json`: a non-zero exit is not enough when the file would still be
+sitting there looking finished.
+
+The archive is decoded in-process (zip central directory + `inflateRaw`, tar via
+`gunzip` and 512-byte headers, including GNU `L` and pax `x` long names) rather than
+by shelling out to an extractor. Partly portability — GNU tar cannot read a zip — but
+mostly independence: running the check through the same external tool family that
+wrote the archive would let one lying tool vouch for another.
+
+Because the digest walk refuses unsafe symlinks, a link planted after validation
 would not change the hash — so phase 04 checks the bundle for links directly before
 the archiver can follow one.
 

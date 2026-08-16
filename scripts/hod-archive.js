@@ -5,10 +5,10 @@
 //   node scripts/hod-archive.js [--out <dir>] [--format zip|targz|both]
 //
 // DONE-gate: phase 03 verdict is ok (I8); archive entry count >= tree file count.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, archive, archiveEntries, childDir,
+  args, die, readState, readJson, writeJson, archive, archiveFileDigests, childDir,
   hashTree, symlinkScan, describeUnsafe, Gates,
 } from "./_lib.js";
 
@@ -76,16 +76,32 @@ for (const ext of format === "both" ? ["zip", "tar.gz"] : [format === "targz" ? 
     die(`archiving ${ext} failed: ${String(err.message ?? err).split("\n")[0]}\n` +
       `  zip needs Info-ZIP \`zip\` or bsdtar; tar.gz needs \`tar\`.`);
   }
-  // Read the archive back and compare its file entries to the validated set. A count
-  // comparison would accept a zip that dropped one file and gained another; only the
-  // set answers "is the thing on disk the thing phase 03 passed?".
-  const inArchive = new Set(archiveEntries(outFile).filter((e) => !e.endsWith("/")));
-  const missing = [...expected].filter((f) => !inArchive.has(f));
-  const extra = [...inArchive].filter((f) => !expected.has(f));
+  /* Read the finished archive back and compare its CONTENTS to the verdict.
+   *
+   * The digest check above proves the tree was intact when this phase started; it
+   * cannot prove the archiver read that tree. Between `hashTree` and the archiver's
+   * open() the directory is still writable — by another agent working in the output
+   * tree, by a racing build, by a substituted tool — so the bytes that landed in the
+   * archive are the only ones worth verifying. Names are not enough: a file can be
+   * replaced by different content under the same name. */
+
+  let inArchive;
+  try {
+    inArchive = archiveFileDigests(outFile);
+  } catch (err) {
+    die(`${ext} could not be read back for verification: ${String(err.message ?? err)}\n` +
+      `  An archive this phase cannot verify is not a deliverable.`);
+  }
+
+  const names = new Set(Object.keys(inArchive));
+  const missing = [...expected].filter((f) => !names.has(f));
+  const extra = [...names].filter((f) => !expected.has(f));
+  const altered = [...expected].filter((f) =>
+    names.has(f) && inArchive[f] !== verdict.digests[f.slice(project.slug.length + 1)]);
 
   written.push({
     format: ext, path: outFile, bytes: statSync(outFile).size,
-    entries: inArchive.size, missing, extra,
+    entries: names.size, missing, extra, altered,
   });
 }
 
@@ -98,9 +114,23 @@ for (const w of written) {
   const problems = [
     w.missing.length ? `${w.missing.length} missing (${w.missing.slice(0, 3).join(", ")})` : "",
     w.extra.length ? `${w.extra.length} unexpected (${w.extra.slice(0, 3).join(", ")})` : "",
+    w.altered.length ? `${w.altered.length} with contents that are not what phase 03 validated ` +
+      `(${w.altered.slice(0, 3).join(", ")})` : "",
   ].filter(Boolean).join("; ");
-  g.check(`${w.format} carries exactly the validated tree`, !problems,
-    problems || `${w.entries}/${treeCount} entries, ${(w.bytes / 1024).toFixed(0)} KB`);
+  g.check(`${w.format} carries exactly the validated bytes`, !problems,
+    problems || `${w.entries}/${treeCount} files, every one byte-identical to the verdict, ` +
+      `${(w.bytes / 1024).toFixed(0)} KB`);
+}
+
+/* An archive that failed verification must not be left lying around looking finished.
+ * The gate below exits non-zero, but the file would still be there for someone to
+ * pick up and send. */
+if (!g.passed) {
+  for (const w of written.filter((x) => x.missing.length || x.extra.length || x.altered.length)) {
+    rmSync(w.path, { force: true });
+    console.error(`removed unverifiable archive: ${w.path}`);
+  }
+  rmSync(join(outRoot, ".handoff", "archive.json"), { force: true });
 }
 console.log(`\nDeliverable(s):\n${written.map((w) => `  ${w.path}`).join("\n")}`);
 g.finish();

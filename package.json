@@ -1,6 +1,6 @@
 {
   "name": "@ross-sec/handoff-od",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Open Design plugin that hands a design project off to OpenCode — the open-source counterpart of Claude Design's design-to-code handoff. Offline-complete bundle, materialized design system, lintable adherence config, optional authored implementation spec.",
   "type": "module",
   "files": [

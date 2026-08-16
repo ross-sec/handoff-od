@@ -5,7 +5,7 @@ license: MIT
 metadata:
   author: Andre Ross
   organization: Ross Technologies
-  version: '0.1.7'
+  version: '0.1.8'
 ---
 
 # Handoff to OpenCode
@@ -55,11 +55,11 @@ carry it. There are two mechanisms and they are frequently confused:
    No hex outside the extracted palette. No route you did not find in the prototype.
 5. **`README.md` is the sole instruction carrier.** `AGENTS.md` and `CLAUDE.md` may point at it;
    they never duplicate it, and nothing else lands at bundle root.
-6. **Never archive an unvalidated tree** — and "unvalidated" means *this* tree. Phase 01 clears the
-   verdict before it rebuilds, phase 03 binds its verdict to a digest of what it inspected, and
-   phase 04 recomputes that digest and refuses on any difference. Touch the bundle by hand after
-   validating and phase 04 will stop you; re-run 03. A half-built bundle that looks finished is
-   worse than no bundle.
+6. **Never archive unvalidated bytes** — not merely an unvalidated path. Phase 01 clears the verdict
+   before it rebuilds, phase 03 records a per-file digest of what it inspected, phase 04 recomputes
+   it before archiving, and then decodes the finished archive and compares the sha256 of every file
+   inside it against that record. An archive that fails is deleted rather than left looking
+   finished. Touch the bundle by hand after validating and phase 04 will stop you; re-run 03.
 7. **Ask before assuming scope.** When `depth` includes `spec`, the feature boundary is the user's
    call, not yours.
 
@@ -77,7 +77,7 @@ Run them in **this order**. The numbering is the phase, not the sequence:
 | 3 | — | *author the spec over its TODO markers*, then `hod-validate.js --spec` | — | no TODO markers left |
 | 4 | 01 | `hod-bundle.js [--force]` | `<slug>/` | slots filled, mirror verbatim, DS + alias, adherence, spec nested |
 | 5 | 03 | `hod-validate.js [--strict]` | `.handoff/validate.json` | see below |
-| 6 | 04 | `hod-archive.js [--format zip\|targz\|both]` | `<Project Name>-handoff.zip` + `.tar.gz` | verdict still binds this tree; archive carries exactly it |
+| 6 | 04 | `hod-archive.js [--format zip\|targz\|both]` | `<Project Name>-handoff.zip` + `.tar.gz` | verdict still binds this tree; the archive's own bytes match it |
 | — | — | `hod-prompt.js --transport mcp\|zip\|both` | `.handoff/prompt.txt` | — |
 
 **02 runs before 01, and that ordering is load-bearing.** Phase 02 writes the spec into the
