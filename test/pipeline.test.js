@@ -534,41 +534,67 @@ test("the archive is verified to carry exactly the validated tree, not merely en
  * file, so another agent in the output tree — or a substituted tool — can swap a
  * file's contents under the same name. Entry-name comparison is blind to it. */
 
-/** A `tar`/`zip` shim that mutates a bundle file, then delegates to the real tool. */
-function racingArchiver(dir, victim) {
-  const real = execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim();
-  const shim = join(dir, "bin");
-  mkdirSync(shim, { recursive: true });
-  for (const name of ["tar", "zip"]) {
-    writeFileSync(join(shim, name), `#!/bin/sh\nprintf 'raced' > ${JSON.stringify(victim)}\n` +
-      (name === "tar" ? `exec ${real} "$@"\n` : `exit 127\n`), { mode: 0o755 });
-  }
-  return shim;
+/** Run a phase with a doctored environment. */
+function runEnv(script, argv, cwd, env) {
+  try {
+    return { code: 0, out: execFileSync(process.execPath, [join(SCRIPTS, script), ...argv],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } }) };
+  } catch (err) { return { code: err.status ?? 1, out: `${err.stdout ?? ""}${err.stderr ?? ""}` }; }
 }
 
-test("a file swapped between the pre-archive check and the archiver is caught", {
-  // The shim works by preceding the real tool on PATH. On Windows `resolveTar()`
-  // deliberately uses the absolute System32 bsdtar, so PATH cannot be used to
-  // intercept it; CI runs this on Linux, which is where it was reported.
-  skip: process.platform === "win32" ? "PATH shim cannot intercept System32 bsdtar" : false,
-}, () => {
+/* ── the deliverable must not need a host package we never declared ─────────
+ * Until 0.1.8 the zip was written by whichever of bsdtar / Info-ZIP zip / macOS tar
+ * / PowerShell happened to exist. On a plain Linux box with only GNU tar that list
+ * is EMPTY — `no working zip writer. Tried 0` — and `transport` defaults to zip, so
+ * the default workflow failed at the promised deliverable. Both formats are now
+ * written in-process. */
+
+test("the default pipeline produces both archives with nothing on PATH at all", () => {
+  const { proj, out } = project();
+  const empty = mkdtempSync(join(tmpdir(), "hod-nopath-"));
+  const env = { PATH: empty, Path: empty, PATHEXT: "" };
+
+  assert.equal(runEnv("hod-detect.js",
+    ["--project-name", "Fixture Project", "--project-dir", proj, "--entry", "Landing.dc.html"], out, env).code, 0);
+  assert.equal(runEnv("hod-bundle.js", [], out, env).code, 0);
+  assert.equal(runEnv("hod-validate.js", [], out, env).code, 0);
+
+  const a = runEnv("hod-archive.js", [], out, env);     // default format: both
+  assert.equal(a.code, 0, a.out);
+  assert.match(a.out, /PASS {2}zip carries exactly the validated bytes/);
+  assert.match(a.out, /PASS {2}tar\.gz carries exactly the validated bytes/);
+
+  const zip = join(out, "Fixture Project-handoff.zip");
+  assert.equal(readFileSync(zip).readUInt32LE(0), 0x04034b50, "a real zip, not a tar named .zip");
+  assert.ok(zipEntries(zip).includes("fixture-project/project/Landing.dc.html"));
+  assert.ok(existsSync(join(out, "Fixture Project-handoff.tar.gz")));
+});
+
+test("a hostile archiver earlier on PATH is never invoked", () => {
+  // The old code shelled out, so whatever `tar`/`zip`/`bsdtar` resolved to could
+  // rewrite the tree mid-archive. Nothing external is invoked now — which is a
+  // stronger guarantee than detecting the tampering afterwards.
   const { out } = builtAndValidated();
+  const shim = mkdtempSync(join(tmpdir(), "hod-hostile-"));
+  const marker = join(shim, "INVOKED");
   const victim = join(out, "fixture-project", "project", "Landing.dc.html");
-  const shim = racingArchiver(mkdtempSync(join(tmpdir(), "hod-race-")), victim);
 
-  const a = (() => {
-    try {
-      return { code: 0, out: execFileSync(process.execPath, [join(SCRIPTS, "hod-archive.js"), "--format", "targz"],
-        { cwd: out, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, PATH: `${shim}:${process.env.PATH}` } }) };
-    } catch (err) { return { code: err.status ?? 1, out: `${err.stdout ?? ""}${err.stderr ?? ""}` }; }
-  })();
+  for (const name of ["tar", "zip", "bsdtar"]) {
+    writeFileSync(join(shim, name),
+      `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nprintf 'raced' > ${JSON.stringify(victim)}\nexit 0\n`,
+      { mode: 0o755 });
+    // Windows resolves .cmd via PATHEXT; cover both so the test is not vacuous there.
+    writeFileSync(join(shim, `${name}.cmd`),
+      `@echo off\r\ntype nul > ${marker}\r\necho raced> ${victim}\r\n`);
+  }
 
-  assert.equal(readFileSync(victim, "utf8"), "raced", "the shim really did mutate the tree");
-  assert.notEqual(a.code, 0, `phase 04 must refuse a raced archive, got:\n${a.out}`);
-  assert.match(a.out, /contents that are not what phase 03 validated|Landing\.dc\.html/);
-  assert.ok(!existsSync(join(out, "Fixture Project-handoff.tar.gz")),
-    "an unverifiable archive must not be left behind looking finished");
+  const a = runEnv("hod-archive.js", ["--format", "both"], out,
+    { PATH: `${shim}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` });
+
+  assert.equal(a.code, 0, a.out);
+  assert.ok(!existsSync(marker), "no external archiver may be executed");
+  assert.equal(readFileSync(victim, "utf8").includes("raced"), false, "the tree is untouched");
+  assert.match(a.out, /PASS {2}zip carries exactly the validated bytes/);
 });
 
 test("an archive whose bytes were altered after writing is rejected on read-back", () => {

@@ -5,7 +5,7 @@ license: MIT
 metadata:
   author: Andre Ross
   organization: Ross Technologies
-  version: '0.1.8'
+  version: '0.1.9'
 ---
 
 # Handoff to OpenCode

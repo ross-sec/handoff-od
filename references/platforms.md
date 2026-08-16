@@ -84,7 +84,7 @@ grants more. Restricted means no `.mcp.json`, no subprocesses, no connectors.
 | `prompt:inject` | always allowed; how `SKILL.md` reaches the agent |
 | `fs:read` | read the project cwd to mirror it |
 | `fs:write` | write `<slug>/` and the archive |
-| `bash` | run the bundled Node scripts, and the zip writer |
+| `bash` | run the bundled Node scripts (nothing else is executed — no archiver, no host tool) |
 
 Trust binds to provenance — plugin id, `specVersion`, version/digest, marketplace id, granted caps.
 **Elevated capabilities must be re-confirmed on upgrade.** A headless capability-gate failure exits
@@ -125,27 +125,35 @@ to build on — `specVersion` exists to absorb change, `additionalProperties: tr
 snapshots freeze the version for replay, and a published JSON Schema validates it. The volatile
 parts are the atom catalog, the `until` vocabulary, GenUI `component`, and connectors.
 
-## Zip writers — a real trap
+## Archive writing — no host tool, at either end
 
-`hod-archive.js` verifies zip magic bytes (`PK\x03\x04`) after writing, and that check is not
-paranoia:
+**Both formats are written in-process. No external archiver is required, or used.**
 
-**GNU tar accepts `-a -c -f out.zip` and silently writes a TAR.** On a machine where Git Bash's GNU
-tar shadows the system one, you get a plausible-looking `.zip` that no unzip tool can open. Verified
-on Windows: GNU tar 1.35 produced a 368 KB tar named `.zip`; the real zip was 122 KB.
+That is a deliberate change from earlier releases, which picked whichever of bsdtar, Info-ZIP `zip`,
+macOS `tar -a` or PowerShell `Compress-Archive` happened to exist. On a plain Linux host with only
+GNU tar that list is **empty**, and since `transport` defaults to `zip`, the default workflow failed
+at the promised deliverable — on a host package the plugin never declared. Node's `zlib` is always
+there, so the writer uses it: DEFLATE plus a hand-built central directory for zip, ustar plus gzip
+for tar.gz.
 
-Preference order, first one whose output has real zip magic wins:
+Dropping the shell-out also removed two platform bugs that were pure accident of tooling:
 
-1. `C:\Windows\System32\tar.exe` (bsdtar) on Windows
-2. `bsdtar`
-3. Info-ZIP `zip`
-4. `tar -a` on macOS (where `tar` is bsdtar)
-5. PowerShell `Compress-Archive`
+- **GNU tar accepts `-a -c -f out.zip` and silently writes a TAR.** Where Git Bash's GNU tar shadowed
+  the system one you got a plausible-looking `.zip` no unzip tool could open — 368 KB of tar against
+  a 122 KB real zip, verified on Windows with GNU tar 1.35.
+- **GNU tar reads the `C:` of an absolute Windows output path as a remote host spec** and refuses.
 
-For `.tar.gz`, GNU tar is fine — but on Windows it reads the `C:` in an absolute output path as a
-**remote host spec** and refuses, so bsdtar is used there too, falling back to `--force-local`.
+Two encoding details the writer has to get right, because nothing else will now:
 
-No working zip writer? `--format targz` always works.
+- The zip sets **general-purpose bit 11** on any entry whose name is not pure ASCII, marking it
+  UTF-8. Without it a reader falls back to CP437.
+- The tar emits a **pax `x` header** carrying `path=` for any name that is non-ASCII or longer than
+  ustar's 100-byte field. ustar declares no encoding, so bsdtar on Windows decoded raw UTF-8 bytes
+  with the ANSI codepage and extracted `файл-ünïcode.txt` as mojibake — the bytes were intact, the
+  name was not. pax is defined as UTF-8, and it covers long paths at the same time.
+
+Output is verified against external readers, not just our own: bsdtar, PowerShell `Compress-Archive`
+and Python's `zipfile` (CRC check) all extract it byte-identically to the source.
 
 ## Portability
 

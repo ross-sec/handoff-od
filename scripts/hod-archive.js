@@ -73,8 +73,9 @@ for (const ext of format === "both" ? ["zip", "tar.gz"] : [format === "targz" ? 
   try {
     archive(outRoot, project.slug, outFile);
   } catch (err) {
-    die(`archiving ${ext} failed: ${String(err.message ?? err).split("\n")[0]}\n` +
-      `  zip needs Info-ZIP \`zip\` or bsdtar; tar.gz needs \`tar\`.`);
+    // Both formats are written in-process, so this is a real I/O or memory failure,
+    // not a missing host tool. There is nothing for the user to install.
+    die(`archiving ${ext} failed: ${String(err.message ?? err).split("\n")[0]}`);
   }
   /* Read the finished archive back and compare its CONTENTS to the verdict.
    *

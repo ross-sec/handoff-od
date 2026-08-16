@@ -2,6 +2,54 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.9] - 2026-08-16
+
+Found in review round 6 of the Open Design catalog submission (nexu-io/open-design#6948).
+**Anyone on 0.1.8 or earlier should upgrade** — on a plain Linux host the default workflow could not
+produce its promised deliverable at all.
+
+### Fixed
+
+- **The default ZIP transport required a host package the plugin never declared.** `zipStrategies()`
+  offered bsdtar, Info-ZIP `zip`, macOS `tar -a` and PowerShell `Compress-Archive`. On a Linux box
+  with only GNU tar that list is **empty** — `no working zip writer. Tried 0` — and since `transport`
+  defaults to `zip`, a user could install the plugin, grant its capabilities, follow the documented
+  workflow and fail at the deliverable. Neither the manifest nor `engines` mentioned the extra
+  executable.
+
+  **Both formats are now written in-process** with Node's `zlib`: DEFLATE plus a hand-built central
+  directory for zip, ustar plus gzip for tar.gz. `engines: node >= 20` and zero dependencies are now
+  the whole requirement. Nothing is shelled out, so nothing external is trusted at either end of the
+  write-then-verify cycle introduced in 0.1.8.
+
+- **Two long-standing platform bugs disappeared with the shell-out**: GNU tar silently writing a TAR
+  for `-a -c -f out.zip`, and GNU tar reading the `C:` of an absolute Windows output path as a remote
+  host spec.
+
+- **Non-ASCII filenames survived the zip but were mangled by the tar.** Caught by testing the output
+  against external readers rather than only our own. ustar declares no encoding, so bsdtar on Windows
+  decoded raw UTF-8 with the ANSI codepage and extracted `файл-ünïcode.txt` as mojibake. The writer
+  now emits a **pax `x` header** with `path=` for any name that is non-ASCII or longer than ustar's
+  100-byte field — pax is defined as UTF-8 and covers long paths at the same time. The zip side sets
+  **general-purpose bit 11** for the same reason. The tar name field is also filled from raw bytes
+  now; slicing the string could cut a multi-byte character in half.
+
+### Tests
+
+- 3 new tests (81 total, green on Linux and Windows, **zero skipped**):
+  - the default pipeline run end to end with `PATH` pointing at an empty directory, asserting both
+    archives are produced and verified — the Linux fixture this round asked for, and it needs no
+    special platform to be meaningful;
+  - a hostile `tar`/`zip`/`bsdtar` placed earlier on `PATH`, asserting it is **never executed** and
+    the tree is untouched. This replaces 0.1.8's race fixture, which shimmed the external archiver:
+    there is no external archiver left to shim, and "cannot be invoked" is a stronger guarantee than
+    "tampering is detected afterwards";
+  - a round-trip of both formats over content that breaks naive writers — a non-ASCII name, a path
+    past tar's 100-byte field, an empty file, binary bytes, and a one-byte file that deflate would
+    make larger (so the writer must store it).
+- Output was verified against **external** readers during development — bsdtar, PowerShell
+  `Expand-Archive`, and Python's `zipfile` CRC check — extracting byte-identically to the source.
+
 ## [0.1.8] - 2026-08-16
 
 Found in review round 5 of the Open Design catalog submission (nexu-io/open-design#6948).

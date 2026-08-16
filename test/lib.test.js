@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { symlinkSync } from "node:fs";
-import { slugify, slugSafe, walk, symlinkScan, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
+import { slugify, slugSafe, walk, symlinkScan, copyTree, archive, archiveContents, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
 
 /**
  * Windows needs Developer Mode or elevation for symlinks; a `junction` needs
@@ -252,6 +252,61 @@ test("archive writes a real zip, verified by magic bytes", () => {
   const magic = readFileSync(out).readUInt32LE(0);
   assert.equal(magic, 0x04034b50, "not a zip — a tar-named-.zip would pass a naive check");
   assert.ok(archiveEntryCount(out) >= 2);
+});
+
+/* ── the writer has to survive real bundle content ──────────────────────────
+ * Both formats are written in-process now, so these cases are ours to get right:
+ * a non-ASCII name (ustar has no charset field — the first cut came out mojibake
+ * through bsdtar), a path past tar's 100-byte name field, an empty file, binary
+ * bytes, and a file so small that deflate makes it bigger. */
+
+function awkwardTree() {
+  const parent = mkdtempSync(join(tmpdir(), "hod-awkward-"));
+  const deep = join(parent, "bundle", "a", "very", "deeply", "nested", "directory",
+    "chain", "that", "pushes", "the", "path", "past", "one", "hundred", "bytes");
+  mkdirSync(deep, { recursive: true });
+  const files = {
+    "README.md": Buffer.from("# hi\n"),
+    "unicode-файл-ünïcode.txt": Buffer.from("naïve café 設計\n", "utf8"),
+    "empty.txt": Buffer.alloc(0),
+    "tiny.txt": Buffer.from("x"),                              // deflate would grow it
+    "binary.woff2": Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 37) % 256)),
+  };
+  for (const [name, data] of Object.entries(files)) writeFileSync(join(parent, "bundle", name), data);
+  files[`a/very/deeply/nested/directory/chain/that/pushes/the/path/past/one/hundred/bytes/deep-файл.txt`] =
+    Buffer.from("deep\n");
+  writeFileSync(join(deep, "deep-файл.txt"), files[Object.keys(files).pop()]);
+  return { parent, files };
+}
+
+for (const ext of ["zip", "tar.gz"]) {
+  test(`${ext} round-trips unicode names, long paths, empty and binary files`, () => {
+    const { parent, files } = awkwardTree();
+    const out = join(parent, `Awkward Name-handoff.${ext}`);
+    archive(parent, "bundle", out);
+
+    const got = archiveContents(out);
+    for (const [rel, data] of Object.entries(files)) {
+      const key = `bundle/${rel}`;
+      assert.ok(got.has(key), `${ext}: ${rel} missing — got ${[...got.keys()].join(", ")}`);
+      assert.deepEqual(got.get(key), data, `${ext}: ${rel} content differs`);
+    }
+    assert.equal(got.size, Object.keys(files).length);
+  });
+}
+
+test("the zip is a real zip by signature, and stores what deflate would enlarge", () => {
+  const { parent } = awkwardTree();
+  const out = join(parent, "z.zip");
+  archive(parent, "bundle", out);
+  const buf = readFileSync(out);
+  assert.equal(buf.readUInt32LE(0), 0x04034b50);
+  // `tiny.txt` is one byte: deflate adds framing, so the writer must store it.
+  const methods = new Set();
+  for (let i = 0; i < buf.length - 4; i++) {
+    if (buf.readUInt32LE(i) === 0x02014b50) methods.add(buf.readUInt16LE(i + 10));
+  }
+  assert.ok(methods.has(0), "at least one entry stored rather than deflated");
 });
 
 test("archive writes a gzip for tar.gz, even from a path with spaces and a drive letter", () => {

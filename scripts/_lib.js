@@ -2,12 +2,11 @@
 // Zero dependencies. Node >= 20. Never calls MCP; the agent passes OD facts in.
 import {
   readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync,
-  existsSync, statSync, realpathSync, rmSync, openSync, readSync, closeSync,
+  existsSync, statSync, realpathSync, rmSync,
 } from "node:fs";
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { gunzipSync, inflateRawSync } from "node:zlib";
+import { gunzipSync, gzipSync, inflateRawSync, deflateRawSync } from "node:zlib";
 
 export const STATE_DIR = ".handoff";
 export const STATE_PATH = join(STATE_DIR, "state.json");
@@ -240,85 +239,193 @@ export function copyTree(srcDir, destDir, { exclude = [] } = {}) {
 
 export const fileCount = (dir) => walk(dir).length;
 
-/* ── archiving (shelled out — no archive dependency) ────────────────────── */
-
-function hasCmd(cmd) {
-  try {
-    execFileSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" });
-    return true;
-  } catch { return false; }
-}
-
-const run = (cmd, args, cwd) =>
-  execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+/* ── archiving (in-process — no external tool at either end) ────────── */
 
 const ZIP_MAGIC = 0x04034b50;
-const WIN_BSDTAR = "C:\\Windows\\System32\\tar.exe";
-
-/**
- * A tar that accepts Windows absolute paths. GNU tar reads the `C:` in
- * `C:\…\out.tar.gz` as a remote host spec and refuses; bsdtar does not.
+/* ── writing archives, in-process ───────────────────────────────────────────
+ *
+ * Both formats are written here rather than shelled out to `zip`, `bsdtar` or
+ * `tar`. The deliverable cannot depend on a host package the plugin never declared:
+ * a bare Linux box has GNU tar and neither of the others, and GNU tar's `-a` accepts
+ * a `.zip` target and silently writes a TAR — so "try tools until one works" had no
+ * portable branch left and failed outright.
+ *
+ * Writing it ourselves also finishes the argument phase 04's verification started:
+ * nothing external writes the archive, and nothing external reads it back, so no
+ * outside tool is trusted at either end. It removes the two platform bugs that came
+ * with the old path as well — GNU tar reading `C:\…` as a remote host spec, and the
+ * silent tar-named-`.zip`.
  */
-function resolveTar() {
-  if (process.platform === "win32" && existsSync(WIN_BSDTAR)) return { exe: WIN_BSDTAR, extra: [] };
-  if (process.platform === "win32") return { exe: "tar", extra: ["--force-local"] };
-  return { exe: "tar", extra: [] };
+
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
 }
 
-/** True when the file really is a zip. GNU tar happily writes a TAR named .zip. */
-function isRealZip(file) {
-  try {
-    const fd = openSync(file, "r");
-    const head = Buffer.alloc(4);
-    readSync(fd, head, 0, 4, 0);
-    closeSync(fd);
-    return head.readUInt32LE(0) === ZIP_MAGIC;
-  } catch { return false; }
+/** DOS date/time. The format's epoch is 1980; anything older clamps to it. */
+function dosStamp(date) {
+  const d = date && date.getFullYear() >= 1980 ? date : new Date(1980, 0, 1);
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+    date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+  };
+}
+
+function buildZip(entries) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+
+  for (const { name, data, mtime } of entries) {
+    const nameBuf = Buffer.from(name, "utf8");
+    if (data.length > 0xffffffff) throw new Error(`${name} is too large for a non-zip64 archive`);
+    const deflated = deflateRawSync(data, { level: 6 });
+    // Storing beats deflating when deflate made it bigger, which happens on tiny
+    // or already-compressed files.
+    const stored = deflated.length >= data.length;
+    const payload = stored ? data : deflated;
+    const { time, date } = dosStamp(mtime);
+    // Bit 11 marks the name as UTF-8; without it a non-ASCII path is read as CP437.
+    const flags = /^[\x20-\x7e]*$/.test(name) ? 0 : 0x800;
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(stored ? 0 : 8, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    locals.push(local, nameBuf, payload);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4);          // version made by
+    cd.writeUInt16LE(20, 6);          // version needed
+    cd.writeUInt16LE(flags, 8);
+    cd.writeUInt16LE(stored ? 0 : 8, 10);
+    cd.writeUInt16LE(time, 12);
+    cd.writeUInt16LE(date, 14);
+    cd.writeUInt32LE(crc32(data), 16);
+    cd.writeUInt32LE(payload.length, 20);
+    cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    // External attrs: unix mode 0644 in the high word. `<<` yields a signed int32
+    // here, and 0o100644 << 16 overflows it — coerce back to unsigned.
+    cd.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    cd.writeUInt32LE(offset, 42);
+    central.push(cd, nameBuf);
+
+    offset += local.length + nameBuf.length + payload.length;
+  }
+
+  const cdBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cdBuf, eocd]);
+}
+
+const TAR_BLOCK = 512;
+const pad = (n) => (n % TAR_BLOCK === 0 ? 0 : TAR_BLOCK - (n % TAR_BLOCK));
+
+function tarHeader(nameBytes, size, mtime, typeflag = "0") {
+  const h = Buffer.alloc(TAR_BLOCK);
+  // Raw bytes, capped at the field width. Slicing the STRING would cut a multi-byte
+  // character in half and write past 100 bytes.
+  nameBytes.copy(h, 0, 0, Math.min(nameBytes.length, 100));
+  h.write("0000644\0", 100, 8, "ascii");                       // mode
+  h.write("0000000\0", 108, 8, "ascii");                       // uid
+  h.write("0000000\0", 116, 8, "ascii");                       // gid
+  h.write(size.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+  h.write(Math.floor((mtime?.getTime() ?? 0) / 1000).toString(8).padStart(11, "0") + "\0", 136, 12, "ascii");
+  h.write("        ", 148, 8, "ascii");                        // checksum placeholder
+  h.write(typeflag, 156, 1, "ascii");
+  h.write("ustar\0", 257, 6, "ascii");
+  h.write("00", 263, 2, "ascii");
+
+  let sum = 0;
+  for (const b of h) sum += b;
+  h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+  return h;
 }
 
 /**
- * Zip writers in preference order. GNU tar is deliberately absent: its `-a`
- * accepts a `.zip` target and silently emits a tar, which is worse than failing.
- * Every candidate is verified by magic bytes before it is accepted.
+ * One pax record: `<len> <key>=<value>\n`, where `<len>` counts itself. Solved by
+ * iteration because adding a digit to the length can change the length.
  */
-function zipStrategies() {
-  const bsd = process.platform === "win32" ? ["C:\\Windows\\System32\\tar.exe"] : [];
-  return [
-    ...bsd.map((exe) => (parent, root, out) => run(exe, ["-a", "-c", "-f", out, "-C", parent, root], parent)),
-    ...(hasCmd("bsdtar") ? [(parent, root, out) => run("bsdtar", ["-a", "-c", "-f", out, "-C", parent, root], parent)] : []),
-    ...(hasCmd("zip") ? [(parent, root, out) => run("zip", ["-r", "-q", out, root], parent)] : []),
-    ...(process.platform === "darwin" ? [(parent, root, out) => run("tar", ["-a", "-c", "-f", out, "-C", parent, root], parent)] : []),
-    ...(process.platform === "win32"
-      ? [(parent, root, out) => run("powershell", ["-NoProfile", "-NonInteractive", "-Command",
-          `Compress-Archive -Path '${root}' -DestinationPath '${out.replace(/'/g, "''")}' -Force`], parent)]
-      : []),
-  ];
+function paxRecord(key, value) {
+  const tail = ` ${key}=${value}\n`;
+  const tailLen = Buffer.byteLength(tail, "utf8");
+  let len = tailLen + 1;
+  for (let i = 0; i < 4; i++) {
+    const next = tailLen + String(len).length;
+    if (next === len) break;
+    len = next;
+  }
+  return Buffer.from(String(len) + tail, "utf8");
+}
+
+function buildTar(entries) {
+  const parts = [];
+  for (const { name, data, mtime } of entries) {
+    const nameBuf = Buffer.from(name, "utf8");
+
+    /* ustar caps the name at 100 bytes and says nothing about its encoding, so a
+     * non-ASCII path is decoded with whatever legacy codepage the reader guesses —
+     * bsdtar on Windows turned `файл-ünïcode.txt` into mojibake on extraction, even
+     * though the bytes were intact. A pax extended header is defined as UTF-8 and
+     * carries the full path, so it fixes long names and non-ASCII names at once.
+     * The ustar header below still carries a truncated fallback for readers that
+     * ignore pax. */
+    if (nameBuf.length > 100 || !/^[\x20-\x7e]*$/.test(name)) {
+      const rec = paxRecord("path", name);
+      parts.push(tarHeader(Buffer.from("PaxHeaders/entry", "utf8"), rec.length, mtime, "x"),
+        rec, Buffer.alloc(pad(rec.length)));
+    }
+
+    parts.push(tarHeader(nameBuf, data.length, mtime), data, Buffer.alloc(pad(data.length)));
+  }
+  parts.push(Buffer.alloc(TAR_BLOCK * 2));                     // end-of-archive
+  return Buffer.concat(parts);
 }
 
 /**
- * Archive `rootName` (a directory inside `parentDir`) to `outFile`.
- * `.tar.gz` uses `tar -czf` (GNU tar is fine here); `.zip` is written by the first
- * strategy that produces a file with a real zip signature.
+ * Write `<parentDir>/<rootName>` to `outFile`, as zip or tar.gz by extension.
+ * Entries are the tree's regular files, in walk order, so the output is stable.
  */
 export function archive(parentDir, rootName, outFile) {
-  if (!outFile.toLowerCase().endsWith(".zip")) {
-    const { exe, extra } = resolveTar();
-    run(exe, [...extra, "-czf", outFile, "-C", parentDir, rootName], parentDir);
-    return outFile;
-  }
-  const errors = [];
-  for (const write of zipStrategies()) {
-    try {
-      rmSync(outFile, { force: true });
-      write(parentDir, rootName, outFile);
-      if (isRealZip(outFile)) return outFile;
-      errors.push("produced a non-zip file (tool cannot write zip)");
-    } catch (err) {
-      errors.push(String(err.message ?? err).split("\n")[0]);
-    }
-  }
-  rmSync(outFile, { force: true });
-  throw new Error(`no working zip writer. Tried ${errors.length}: ${errors.join(" | ")}`);
+  const root = join(parentDir, rootName);
+  const entries = walk(root).map((rel) => ({
+    name: `${rootName}/${rel}`,
+    data: readFileSync(join(root, rel)),
+    mtime: statSync(join(root, rel)).mtime,
+  }));
+
+  const buf = outFile.toLowerCase().endsWith(".zip")
+    ? buildZip(entries)
+    : gzipSync(buildTar(entries), { level: 6 });
+
+  mkdirSync(dirname(outFile), { recursive: true });
+  writeFileSync(outFile, buf);
+  return outFile;
 }
 
 /**
