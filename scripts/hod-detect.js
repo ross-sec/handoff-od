@@ -10,7 +10,8 @@
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, slugSafe, childDir, walk, readJson, writeState, Gates, posix, NEVER_SHIP,
+  args, die, slugSafe, childDir, isUnder, walk, symlinkScan, describeUnsafe,
+  readJson, writeState, Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
 const a = args();
@@ -30,6 +31,8 @@ childDir(outDir, slug, "project slug");
 // OD's analogue is get_active_context(), which returns the active project AND file.
 // Present -> Form 1. Absent -> Form 2, and we record the candidates we would have picked.
 
+const links = symlinkScan(projectDir, { exclude: NEVER_SHIP });
+
 const designFiles = walk(projectDir, { exclude: NEVER_SHIP })
   .filter((f) => /\.(dc\.html|html)$/i.test(f) && !f.includes("/"));
 
@@ -41,6 +44,10 @@ const candidates = designFiles
 
 let entryFile = null;
 if (typeof a.entry === "string" && a.entry) {
+  // I9 — the entry is what the README tells the agent to open, and it is resolved
+  // against the bundle's `project/` mirror. One that leaves the project would name
+  // a path the bundle does not contain.
+  if (!isUnder(projectDir, a.entry)) die(`--entry "${a.entry}" resolves outside --project-dir`);
   if (existsSync(join(projectDir, a.entry))) entryFile = posix(a.entry);
   else console.error(`WARN: --entry "${a.entry}" not found under project-dir; falling back to Form 2`);
 }
@@ -159,6 +166,14 @@ g.check("design system resolved or explicitly none", designSystem !== undefined,
   designSystem ? `${designSystem.dir} (${designSystem.shape}, ${designSystem.componentCount} components, ${designSystem.aliases.length} alias)` : "none");
 g.check("token carrier named", !!tokenCarrier, tokenCarrier);
 g.check("slug is a usable directory name", /^[a-z0-9][a-z0-9-]*$/.test(slug), `${slug}/`);
+// I9 — report it here, at the phase that reads the project, so an unmirrorable
+// tree is named before any bundle work starts. Phase 01 refuses independently.
+g.check("no symlink escapes the project — I9", links.unsafe.length === 0,
+  links.unsafe.length
+    ? `${links.unsafe.length} refused:\n${describeUnsafe(links.unsafe)}`
+    : links.followed.length
+      ? `${links.followed.length} link(s), all resolving inside the project`
+      : "no symlinks");
 // Only a design system that DECLARES fonts owes us binaries; one that inherits the
 // host's typography legitimately ships none.
 if (designSystem?.fonts.length) {

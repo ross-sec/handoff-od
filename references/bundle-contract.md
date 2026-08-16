@@ -140,3 +140,26 @@ Likewise: never `HANDOFF.md`, never `IMPLEMENTATION.md`. The instruction file is
 | I6 | `README.md` is the sole instruction carrier; pointers point, never duplicate |
 | I7 | Adherence config only when a design system is bound; derived, never hand-written |
 | I8 | Archive only after phase 03 writes `ok: true` |
+| I9 | Nothing outside the project directory is ever mirrored, named or read |
+
+### I9 in practice
+
+A symlink is not a design file, and `Dirent.isDirectory()` describes the *link*, not
+its target — so an unclassified walk hands every link to `copyFileSync`, which either
+copies an external target's bytes into the bundle or throws (`EISDIR` on POSIX,
+`EPERM` on Windows) and aborts the mirror.
+
+The policy is applied to the **resolved** target:
+
+| Link resolves | Outcome |
+|---|---|
+| under the project root | followed, and materialized as its target's content — the bundle must stay self-contained, and zip/tar would flatten the link anyway |
+| under the root but excluded (`node_modules`, `.git`, sync bookkeeping) | skipped exactly as the target would be, so a link is not a way around `NEVER_SHIP` |
+| outside the root | **refused** — phase 00 fails its gate, phase 01 exits 2 before writing or deleting anything |
+| nowhere (dangling) | **refused** — a mirror that silently omits a file is not verbatim |
+
+The same rule covers raw path input, which bypasses the walker entirely: `--entry`,
+`--files` and `--focus` are each rejected when they resolve outside the project, and
+`designSystem.dir` is re-checked when read back from `state.json`. Phase 03 then
+asserts the finished bundle contains no symlinks at all — any survivor is a hole the
+archive would flatten or drop.

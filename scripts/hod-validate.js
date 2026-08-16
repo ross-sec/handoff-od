@@ -6,7 +6,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, walk, childDir, Gates, TEXTUAL, SYNC_BOOKKEEPING,
+  args, die, readState, readJson, writeJson, walk, childDir, symlinkScan, describeUnsafe,
+  Gates, TEXTUAL, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { verifyAdherence } from "./_adherence.js";
 
@@ -124,6 +125,18 @@ g.check("README is the instruction carrier", /^#\s+CODING AGENTS/m.test(readme))
 g.check("root purity", rootEntries.every((e) => permitted.has(e)),
   rootEntries.filter((e) => !permitted.has(e)).join(", ") || rootEntries.sort().join(" + "));
 g.check("no screenshots at root", !files.some((f) => !f.includes("/") && /\.(png|jpe?g|webp|gif)$/i.test(f)));
+// I9 — the mirror materializes internal links as their target's content, so a
+// FINISHED bundle contains no symlinks at all. Any left is a hole in the mirror:
+// an archive would flatten or drop it, and the receiving agent would get neither
+// the file nor an error.
+const bundleLinks = symlinkScan(bundleRoot);
+g.check("no symlinks in the bundle — I9",
+  bundleLinks.followed.length === 0 && bundleLinks.unsafe.length === 0,
+  bundleLinks.unsafe.length
+    ? `${bundleLinks.unsafe.length} unsafe:\n${describeUnsafe(bundleLinks.unsafe)}`
+    : bundleLinks.followed.length
+      ? `${bundleLinks.followed.length} link(s) survived materialization: ${bundleLinks.followed.map((l) => l.rel).join(", ")}`
+      : "fully materialized");
 
 if (designSystem) {
   const dsDir = join(bundleRoot, "project", designSystem.dir === "." ? "" : designSystem.dir);

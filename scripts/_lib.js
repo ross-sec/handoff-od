@@ -2,9 +2,9 @@
 // Zero dependencies. Node >= 20. Never calls MCP; the agent passes OD facts in.
 import {
   readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync,
-  existsSync, statSync, rmSync, openSync, readSync, closeSync,
+  existsSync, statSync, realpathSync, rmSync, openSync, readSync, closeSync,
 } from "node:fs";
-import { join, dirname, relative, resolve, sep } from "node:path";
+import { join, dirname, basename, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -57,6 +57,24 @@ export function childDir(root, name, label = "path") {
   return target;
 }
 
+/**
+ * True when `rel` lands at or under `root`. The predicate form of `childDir`,
+ * for the places that filter a list rather than resolve a single target.
+ *
+ * Resolves symlinks when the path exists, so it answers the question that
+ * matters for I9 — "would reading this leave the project?" — rather than the
+ * merely lexical one. Falls back to a lexical resolve for paths that do not
+ * exist yet.
+ */
+export function isUnder(root, rel) {
+  let base;
+  try { base = realpathSync(root); } catch { base = resolve(root); }
+  const abs = resolve(base, String(rel ?? ""));
+  let real;
+  try { real = realpathSync(abs); } catch { real = abs; }
+  return real === base || real.startsWith(base + sep);
+}
+
 export const posix = (p) => String(p).split(sep).join("/");
 
 export function readJson(p, fallback = null) {
@@ -83,28 +101,118 @@ export function writeState(state, cwd = process.cwd()) {
 /* ── tree walking & mirroring ───────────────────────────────────────────── */
 
 /**
- * Recursive relative file list, sorted. `exclude` entries are tested against
- * both the posix relative path and the bare basename.
+ * One pass over a tree, classifying every entry.
+ *
+ * I9 — nothing outside the project directory is ever mirrored.
+ *
+ * A symlink is not a design file, and `Dirent.isDirectory()` is FALSE for one
+ * even when it points at a directory — the Dirent describes the link, not its
+ * target. An unclassified walk therefore hands every symlink to `copyFileSync`,
+ * which then either
+ *   - follows it and writes the TARGET's bytes into the bundle as a regular
+ *     file, silently disclosing whatever lived outside the project, or
+ *   - throws (EISDIR on POSIX, EPERM on Windows) for a directory link and
+ *     aborts the handoff mid-mirror, leaving a partial bundle.
+ *
+ * The policy is applied to the RESOLVED target, not the link:
+ *   - resolves under the project root -> followed, and mirrored as its target's
+ *     content. Materializing rather than preserving the link is deliberate: the
+ *     bundle has to stay self-contained, and zip/tar plus a Windows extract
+ *     would flatten or break the link anyway.
+ *   - resolves anywhere else, or does not resolve -> refused, listed by
+ *     `symlinkScan().unsafe`, and hard-gated in phases 00, 01 and 03. Never
+ *     silently dropped: a mirror that quietly omits a file is not verbatim.
+ *
+ * A link whose target is inside the root but EXCLUDED (`node_modules`, `.git`,
+ * sync bookkeeping) is skipped exactly as the target itself would be —
+ * otherwise a symlink is a way around `NEVER_SHIP`.
  */
-export function walk(dir, { exclude = [] } = {}) {
-  const out = [];
-  (function rec(d) {
+function scanTree(dir, { exclude = [] } = {}) {
+  const files = [];
+  const unsafe = [];
+  const followed = [];
+
+  let base;
+  try { base = realpathSync(dir); } catch { return { files, unsafe, followed }; }
+
+  const excluded = (rel, name) => exclude.some((rx) => rx.test(rel) || rx.test(name));
+  const inside = (real) => real === base || real.startsWith(base + sep);
+
+  (function rec(d, stack) {
     let entries;
     try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+
     for (const e of entries) {
       const abs = join(d, e.name);
       const rel = posix(relative(dir, abs));
-      if (exclude.some((rx) => rx.test(rel) || rx.test(e.name))) continue;
-      if (e.isDirectory()) rec(abs);
-      else out.push(rel);
+      if (excluded(rel, e.name)) continue;
+
+      if (e.isSymbolicLink()) {
+        let real;
+        try { real = realpathSync(abs); } catch {
+          unsafe.push({ rel, target: null, reason: "does not resolve" });
+          continue;
+        }
+        if (!inside(real)) {
+          unsafe.push({ rel, target: real, reason: "resolves outside the project" });
+          continue;
+        }
+        // Honour the exclude list against the target, so a link cannot smuggle
+        // an excluded path into the bundle by pointing at it from a clean name.
+        if (excluded(posix(relative(base, real)), basename(real))) continue;
+        // A link back up its own branch would recurse forever.
+        if (stack.includes(real)) continue;
+
+        let st;
+        try { st = statSync(abs); } catch {
+          unsafe.push({ rel, target: real, reason: "does not resolve" });
+          continue;
+        }
+        followed.push({ rel, target: real });
+        if (st.isDirectory()) rec(abs, [...stack, real]);
+        else if (st.isFile()) files.push(rel);
+        continue;
+      }
+
+      if (e.isDirectory()) { rec(abs, stack); continue; }
+      // Regular files only — a fifo, socket or device node would hang or fail
+      // the copy, and is never a design file.
+      if (e.isFile()) files.push(rel);
     }
-  })(dir);
-  return out.sort();
+  })(dir, [base]);
+
+  const byRel = (a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+  return { files: files.sort(), unsafe: unsafe.sort(byRel), followed: followed.sort(byRel) };
 }
+
+/**
+ * Recursive relative file list, sorted. `exclude` entries are tested against
+ * both the posix relative path and the bare basename. Symlinks are resolved
+ * under the I9 policy above; anything it refuses is absent from this list and
+ * present in `symlinkScan().unsafe`.
+ */
+export function walk(dir, opts) { return scanTree(dir, opts).files; }
+
+/**
+ * The symlink verdict for a tree: `followed` are links resolving inside it (safe
+ * to materialize), `unsafe` are the ones the mirror refuses. An empty `unsafe`
+ * is the gate condition for I9.
+ */
+export function symlinkScan(dir, opts) {
+  const { unsafe, followed } = scanTree(dir, opts);
+  return { unsafe, followed };
+}
+
+/** Human-readable I9 offender list, one per line. */
+export const describeUnsafe = (unsafe) =>
+  unsafe.map((u) => `  ${u.rel} -> ${u.target ?? "(unresolvable)"}  [${u.reason}]`).join("\n");
 
 /**
  * Verbatim mirror. I1: never rename, never re-suffix, never reformat.
  * Returns the list of relative paths copied.
+ *
+ * Only ever copies what `scanTree` classified as a real file, so an unsafe
+ * symlink cannot reach `copyFileSync` even if a caller forgot to gate on it.
  */
 export function copyTree(srcDir, destDir, { exclude = [] } = {}) {
   const files = walk(srcDir, { exclude });

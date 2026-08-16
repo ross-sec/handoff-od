@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   args, die, readState, readJson, writeJson, writeText, copyTree, walk,
-  childDir, Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
+  childDir, isUnder, symlinkScan, describeUnsafe, Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { buildAdherence, collectComponents } from "./_adherence.js";
 
@@ -25,6 +25,19 @@ const { project, entry, designSystem, options } = state;
 // `--force` below is a recursive delete: resolve the target through the guard so a
 // slug that is empty, `.`, absolute, or climbs out of outRoot can never name it.
 const bundleRoot = childDir(outRoot, project.slug, "project slug");
+
+// I9 — re-checked here rather than trusted from phase 00: the project can change
+// between phases, and `state.json` is on disk and hand-editable.
+//
+// This runs BEFORE the `--force` delete below, not after. Refusing once the old
+// bundle is already gone would cost the user a good bundle and hand back nothing.
+const links = symlinkScan(project.dir, { exclude: NEVER_SHIP });
+if (links.unsafe.length) {
+  die(`I9 — refusing to mirror ${links.unsafe.length} symlink(s):\n${describeUnsafe(links.unsafe)}\n` +
+    `  Following these would copy files from outside the project into the bundle, or abort the\n` +
+    `  mirror on a directory link. Remove them, or replace them with real copies inside the\n` +
+    `  project, then re-run phase 01. Nothing has been written or deleted.`);
+}
 
 if (existsSync(bundleRoot)) {
   if (!a.force) die(`${project.slug}/ already exists — pass --force to rebuild`);
@@ -42,6 +55,11 @@ const mirrored = copyTree(project.dir, join(bundleRoot, "project"), { exclude: N
 
 let adherence = { action: "none", path: null, rules: 0 };
 if (designSystem) {
+  // Also from state.json, and it is both read from and written to — so it gets the
+  // same treatment as the slug rather than being trusted because detect produced it.
+  if (!isUnder(project.dir, designSystem.dir)) {
+    die(`I9 — designSystem.dir "${designSystem.dir}" resolves outside the project`);
+  }
   const dsIn = join(project.dir, designSystem.dir);
   const dsOut = join(bundleRoot, "project", designSystem.dir === "." ? "" : designSystem.dir);
   const target = join(dsOut, "_adherence.oxlintrc.json");
@@ -144,6 +162,10 @@ g.check("project mirrored verbatim", mirrored.length === project.fileCount,
   `${mirrored.length}/${project.fileCount} files`);
 g.check("no re-suffixed sources", !bundleFiles.some((f) => /\.(jsx|d\.ts)\.txt$/i.test(f)), "I1");
 g.check("no sync bookkeeping", !bundleFiles.some((f) => SYNC_BOOKKEEPING.test(f)), "I4 — _ds_sync.json / _ods_sync.json / _ods_needs_recompile");
+g.check("no symlink escapes the project — I9", true,
+  links.followed.length
+    ? `${links.followed.length} internal link(s) materialized as their target's content`
+    : "no symlinks");
 
 if (designSystem) {
   const dsPrefix = designSystem.dir === "." ? "project/" : `project/${designSystem.dir}/`;

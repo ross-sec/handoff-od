@@ -8,7 +8,7 @@
 //                              [--focus "a.html,b.css"] [--agent claude|opencode|…]
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, normalize, basename } from "node:path";
-import { args, die, readState, readJson, writeText, posix } from "./_lib.js";
+import { args, die, readState, readJson, writeText, isUnder, posix } from "./_lib.js";
 
 const a = args();
 const outRoot = a.out ?? process.cwd();
@@ -29,6 +29,14 @@ const agent = a.agent ?? "opencode";
 const focus = typeof a.focus === "string"
   ? a.focus.split(",").map((s) => s.trim()).filter(Boolean)
   : (entry.file ? [entry.file] : []);
+
+// I9 — the prompt names files for the agent to open. A focus path that leaves the
+// project would point it at something the bundle does not contain.
+const strayFocus = focus.filter((f) => !isUnder(project.dir, f));
+if (strayFocus.length) {
+  die(`I9 — --focus must stay inside the project:\n${strayFocus.map((f) => `  ${f}`).join("\n")}\n` +
+    `  Paths are relative to ${project.dir}.`);
+}
 
 /* ── import discovery ───────────────────────────────────────────────────────
  * Scan the focused HTML for the resources it pulls in, so the receiving agent is
@@ -59,7 +67,9 @@ function discoverImports(files) {
         if (!raw || /^(?:https?:)?\/\//i.test(raw) || /^(data|mailto|tel|#)/i.test(raw)) continue;
         const resolved = posix(normalize(join(dirname(rel), raw.split(/[?#]/)[0])));
         if (resolved.startsWith("..") || files.includes(resolved)) continue;
-        if (existsSync(join(project.dir, resolved))) found.add(resolved);
+        // The lexical check above misses a reference that leaves the project
+        // through a symlink — I9 applies to what the agent is TOLD to read, too.
+        if (existsSync(join(project.dir, resolved)) && isUnder(project.dir, resolved)) found.add(resolved);
       }
     }
   }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, lstatSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -257,6 +257,151 @@ test("the archive filename cannot carry a path out of the output directory", () 
   const zips = readdirSync(out).filter((f) => f.endsWith(".zip"));
   assert.deepEqual(zips, ["pwned v2-handoff.zip"]);
   assert.ok(!existsSync(join(out, "..", "..", "pwned: v2-handoff.zip")));
+});
+
+/* ── I9 end to end: symlinks through the real phases ────────────────────────
+ * The unit coverage is in lib.test.js; these drive the gates a user actually
+ * hits, and assert the pipeline STOPS rather than shipping or half-shipping. */
+
+const canLink = (() => {
+  const p = mkdtempSync(join(tmpdir(), "hod-pipe-probe-"));
+  writeFileSync(join(p, "f"), "x");
+  try { symlinkSync("f", join(p, "l"), "file"); return true; } catch { return false; }
+})();
+
+/** The fixture project plus a sibling directory holding something private. */
+function projectWithOutsider() {
+  const { proj, out } = project();
+  const outside = join(proj, "..", "outside");
+  mkdirSync(join(outside, "dir"), { recursive: true });
+  writeFileSync(join(outside, "creds.env"), "AWS_SECRET_ACCESS_KEY=hunter2");
+  writeFileSync(join(outside, "dir", "unrelated.txt"), "not ours");
+  return { proj, out, outside };
+}
+
+test("detect reports an external file symlink and bundle refuses to mirror it", { skip: !canLink }, () => {
+  const { proj, out, outside } = projectWithOutsider();
+  symlinkSync(join(outside, "creds.env"), join(proj, "linked-secret.txt"), "file");
+
+  const d = detect(proj, out);
+  assert.equal(d.code, 1, "phase 00 must fail the I9 gate");
+  assert.match(d.out, /FAIL {2}no symlink escapes the project — I9/);
+  assert.match(d.out, /linked-secret\.txt .*resolves outside the project/s);
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2, "phase 01 refuses independently of phase 00");
+  assert.match(b.out, /I9 — refusing to mirror 1 symlink/);
+
+  assert.ok(!existsSync(join(out, "fixture-project")),
+    "the refusal happens before anything is written — no empty bundle left behind");
+});
+
+test("a refusal never destroys an existing bundle, even with --force", { skip: !canLink }, () => {
+  const { proj, out, outside } = projectWithOutsider();
+  assert.equal(detect(proj, out).code, 0);
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  const good = join(out, "fixture-project", "project", "Landing.dc.html");
+  assert.ok(existsSync(good));
+
+  // The project grows an unsafe link only now, between builds.
+  symlinkSync(join(outside, "creds.env"), join(proj, "linked-secret.txt"), "file");
+
+  const b = run("hod-bundle.js", ["--force"], out);
+  assert.equal(b.code, 2);
+  assert.match(b.out, /Nothing has been written or deleted/);
+  assert.ok(existsSync(good), "--force must not delete the previous bundle before refusing");
+});
+
+test("an external directory symlink is refused, not an EISDIR/EPERM abort", { skip: !canLink }, () => {
+  const { proj, out, outside } = projectWithOutsider();
+  try { symlinkSync(join(outside, "dir"), join(proj, "linked-dir"), "dir"); }
+  catch { symlinkSync(join(outside, "dir"), join(proj, "linked-dir"), "junction"); }
+
+  assert.equal(detect(proj, out).code, 1);
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2);
+  assert.match(b.out, /I9 — refusing to mirror/);
+  assert.ok(!/EISDIR|EPERM|Error:/.test(b.out), `must be a clean refusal, got:\n${b.out}`);
+  assert.ok(!existsSync(join(out, "fixture-project", "project", "linked-dir", "unrelated.txt")));
+});
+
+test("an internal symlink passes every gate and ships as real content", { skip: !canLink }, () => {
+  const { proj, out } = project();
+  symlinkSync(join(proj, "support.js"), join(proj, "runtime-alias.js"), "file");
+
+  const d = detect(proj, out, ["--entry", "Landing.dc.html"]);
+  assert.equal(d.code, 0, d.out);
+  assert.match(d.out, /PASS {2}no symlink escapes the project — I9 — 1 link\(s\), all resolving inside/);
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 0, b.out);
+  assert.match(b.out, /PASS {2}no symlink escapes the project — I9 — 1 internal link/);
+
+  const shipped = join(out, "fixture-project", "project", "runtime-alias.js");
+  assert.equal(readFileSync(shipped, "utf8"), "// runtime");
+  assert.ok(!lstatSync(shipped).isSymbolicLink(), "materialized, so the archive cannot flatten it away");
+
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 0, v.out);
+  assert.match(v.out, /PASS {2}no symlinks in the bundle — I9 — fully materialized/);
+});
+
+test("validate catches a symlink smuggled into a built bundle", { skip: !canLink }, () => {
+  const { proj, out } = project();
+  detect(proj, out);
+  run("hod-bundle.js", [], out);
+  symlinkSync(join(proj, "support.js"), join(out, "fixture-project", "project", "sneak.js"), "file");
+
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 1);
+  assert.match(v.out, /FAIL {2}no symlinks in the bundle — I9/);
+});
+
+/* ── I9, the non-symlink half: raw path input ───────────────────────────────
+ * `--files`, `--focus` and `--entry` bypass `walk` entirely, so a plain `../`
+ * reaches the filesystem without a link being involved at all. Same disclosure,
+ * different door. */
+
+test("--files cannot copy a file from outside the project into the spec", () => {
+  const { proj, out } = project();
+  writeFileSync(join(proj, "..", "outsider.env"), "AWS_SECRET_ACCESS_KEY=hunter2");
+  detect(proj, out, ["--entry", "Landing.dc.html"]);
+
+  const s = run("hod-spec.js", ["--feature", "Landing Page", "--files", "../outsider.env"], out);
+  assert.equal(s.code, 2, s.out);
+  assert.match(s.out, /I9 — --files must stay inside the project/);
+  assert.ok(!existsSync(join(proj, "design_handoff_landing_page", "prototypes", "outsider.env")));
+});
+
+test("--focus cannot point the agent at a file outside the project", () => {
+  const { proj, out } = project();
+  writeFileSync(join(proj, "..", "outsider.env"), "secret");
+  detect(proj, out, ["--entry", "Landing.dc.html"]);
+
+  const p = run("hod-prompt.js", ["--focus", "../outsider.env"], out);
+  assert.equal(p.code, 2, p.out);
+  assert.match(p.out, /I9 — --focus must stay inside the project/);
+});
+
+test("--entry cannot escape the project directory", () => {
+  const { proj, out } = project();
+  writeFileSync(join(proj, "..", "outsider.html"), "<h1>x</h1>");
+  const d = detect(proj, out, ["--entry", "../outsider.html"]);
+  assert.equal(d.code, 2, d.out);
+  assert.match(d.out, /--entry .* resolves outside --project-dir/);
+});
+
+test("a hand-edited designSystem.dir cannot escape the project", () => {
+  const { proj, out } = project();
+  detect(proj, out);
+  const statePath = join(out, ".handoff", "state.json");
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.designSystem.dir = "../outside-ds";
+  writeFileSync(statePath, JSON.stringify(state));
+
+  const b = run("hod-bundle.js", [], out);
+  assert.equal(b.code, 2, b.out);
+  assert.match(b.out, /designSystem\.dir .* resolves outside the project/);
 });
 
 /* ── spec scaffold ─────────────────────────────────────────────────────────── */

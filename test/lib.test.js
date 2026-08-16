@@ -1,9 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { slugify, slugSafe, walk, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
+import { symlinkSync } from "node:fs";
+import { slugify, slugSafe, walk, symlinkScan, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
+
+/**
+ * Windows needs Developer Mode or elevation for symlinks; a `junction` needs
+ * neither but only works for directories. Probe once — if the platform refuses
+ * outright, the symlink suite has nothing to assert and says so loudly rather
+ * than passing silently.
+ */
+function linkKinds() {
+  const probe = mkdtempSync(join(tmpdir(), "hod-link-probe-"));
+  mkdirSync(join(probe, "d"));
+  writeFileSync(join(probe, "f"), "x");
+  const ok = { file: false, dir: false, junction: false };
+  for (const [kind, target, name] of [["file", "f", "lf"], ["dir", "d", "ld"], ["junction", "d", "lj"]]) {
+    try { symlinkSync(target, join(probe, name), kind); ok[kind] = true; } catch { /* unsupported */ }
+  }
+  return ok;
+}
+const LINKS = linkKinds();
 
 test("slugify matches every known project name", () => {
   const cases = [
@@ -73,6 +92,127 @@ test("copyTree mirrors byte-for-byte and skips excluded paths", () => {
   assert.equal(readFileSync(join(dest, "sub", "deep", "c.js"), "utf8"), "//c");
   assert.ok(!existsSync(join(dest, "_ds_sync.json")), "I4 — sync bookkeeping must not ship");
   assert.ok(!existsSync(join(dest, "node_modules")));
+});
+
+/* ── I9: nothing outside the project is ever mirrored ───────────────────────
+ * `Dirent.isDirectory()` describes the LINK, not its target, so an unclassified
+ * walk called every symlink a file and handed it to copyFileSync — which either
+ * copied an external target's bytes into the bundle (disclosure) or threw
+ * EISDIR/EPERM on a directory link and aborted the mirror. */
+
+/** A project with every link shape: file/dir, inside/outside, dangling, cyclic. */
+function linkedTree() {
+  const root = mkdtempSync(join(tmpdir(), "hod-link-"));
+  const outside = join(root, "outside");
+  const proj = join(root, "proj");
+  mkdirSync(join(outside, "dir"), { recursive: true });
+  mkdirSync(join(proj, "real", "nested"), { recursive: true });
+  mkdirSync(join(proj, "node_modules"), { recursive: true });
+
+  writeFileSync(join(outside, "creds.env"), "AWS_SECRET_ACCESS_KEY=hunter2");
+  writeFileSync(join(outside, "dir", "unrelated.txt"), "not ours");
+  writeFileSync(join(proj, "Landing.dc.html"), "<h1>L</h1>");
+  writeFileSync(join(proj, "real", "inside.css"), "body{}");
+  writeFileSync(join(proj, "real", "nested", "deep.js"), "//deep");
+  writeFileSync(join(proj, "node_modules", "junk.js"), "//junk");
+  return { root, proj, outside };
+}
+
+const link = (from, to, kind) => symlinkSync(to, from, kind);
+
+test("a symlink to a file OUTSIDE the project is refused, never copied", { skip: !LINKS.file }, () => {
+  const { proj, outside } = linkedTree();
+  link(join(proj, "linked-secret.txt"), join(outside, "creds.env"), "file");
+
+  const { unsafe } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.equal(unsafe.length, 1);
+  assert.equal(unsafe[0].rel, "linked-secret.txt");
+  assert.equal(unsafe[0].reason, "resolves outside the project");
+
+  assert.ok(!walk(proj, { exclude: NEVER_SHIP }).includes("linked-secret.txt"),
+    "an unsafe link must never reach the file list copyTree consumes");
+
+  const dest = join(mkdtempSync(join(tmpdir(), "hod-link-dst-")), "out");
+  copyTree(proj, dest, { exclude: NEVER_SHIP });
+  assert.ok(!existsSync(join(dest, "linked-secret.txt")), "the target's bytes must not be in the mirror");
+  assert.ok(existsSync(join(dest, "Landing.dc.html")), "the rest of the project still mirrors");
+});
+
+test("a symlink to a directory OUTSIDE the project is refused, not an EISDIR crash", { skip: !LINKS.dir }, () => {
+  const { proj, outside } = linkedTree();
+  link(join(proj, "linked-dir"), join(outside, "dir"), "dir");
+
+  const { unsafe } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.deepEqual(unsafe.map((u) => u.rel), ["linked-dir"]);
+
+  const dest = join(mkdtempSync(join(tmpdir(), "hod-link-dst-")), "out");
+  const copied = copyTree(proj, dest, { exclude: NEVER_SHIP });   // must not throw
+  assert.ok(!copied.some((f) => f.startsWith("linked-dir")));
+  assert.ok(!existsSync(join(dest, "linked-dir", "unrelated.txt")));
+});
+
+test("a symlink to a file INSIDE the project is followed and materialized", { skip: !LINKS.file }, () => {
+  const { proj } = linkedTree();
+  link(join(proj, "alias.css"), join(proj, "real", "inside.css"), "file");
+
+  const { unsafe, followed } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.equal(unsafe.length, 0);
+  assert.deepEqual(followed.map((l) => l.rel), ["alias.css"]);
+  assert.ok(walk(proj, { exclude: NEVER_SHIP }).includes("alias.css"));
+
+  const dest = join(mkdtempSync(join(tmpdir(), "hod-link-dst-")), "out");
+  copyTree(proj, dest, { exclude: NEVER_SHIP });
+  assert.equal(readFileSync(join(dest, "alias.css"), "utf8"), "body{}",
+    "materialized as its target's content — the bundle must stay self-contained");
+  assert.ok(!lstatSync(join(dest, "alias.css")).isSymbolicLink(), "and as a real file, not a link");
+});
+
+test("a symlink to a directory INSIDE the project is walked into", { skip: !(LINKS.dir || LINKS.junction) }, () => {
+  const { proj } = linkedTree();
+  link(join(proj, "_ds_alias"), join(proj, "real"), LINKS.dir ? "dir" : "junction");
+
+  const { unsafe } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.equal(unsafe.length, 0);
+
+  const files = walk(proj, { exclude: NEVER_SHIP });
+  assert.ok(files.includes("_ds_alias/inside.css"), "the alias dir's contents are mirrored");
+  assert.ok(files.includes("_ds_alias/nested/deep.js"), "recursively");
+
+  const dest = join(mkdtempSync(join(tmpdir(), "hod-link-dst-")), "out");
+  copyTree(proj, dest, { exclude: NEVER_SHIP });
+  assert.equal(readFileSync(join(dest, "_ds_alias", "nested", "deep.js"), "utf8"), "//deep");
+});
+
+test("a dangling symlink is refused, not silently dropped", { skip: !LINKS.file }, () => {
+  const { proj } = linkedTree();
+  link(join(proj, "gone.css"), join(proj, "real", "never-existed.css"), "file");
+
+  const { unsafe } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.deepEqual(unsafe.map((u) => [u.rel, u.reason]), [["gone.css", "does not resolve"]]);
+});
+
+test("a symlink cannot smuggle an excluded path past NEVER_SHIP", { skip: !LINKS.file }, () => {
+  const { proj } = linkedTree();
+  link(join(proj, "innocent.js"), join(proj, "node_modules", "junk.js"), "file");
+
+  const { unsafe } = symlinkScan(proj, { exclude: NEVER_SHIP });
+  assert.equal(unsafe.length, 0, "it resolves inside the project, so it is not an I9 escape");
+  assert.ok(!walk(proj, { exclude: NEVER_SHIP }).includes("innocent.js"),
+    "but the exclude list applies to the TARGET — otherwise a link is a way around it");
+});
+
+test("a symlink loop terminates instead of recursing forever", { skip: !(LINKS.dir || LINKS.junction) }, () => {
+  const { proj } = linkedTree();
+  link(join(proj, "real", "loop"), proj, LINKS.dir ? "dir" : "junction");
+
+  const files = walk(proj, { exclude: NEVER_SHIP });   // must return, not blow the stack
+  assert.ok(files.includes("Landing.dc.html"));
+  assert.ok(files.every((f) => (f.match(/loop/g) ?? []).length <= 1), "no runaway repetition");
+});
+
+test("the symlink suite actually ran somewhere", () => {
+  assert.ok(LINKS.file || LINKS.dir || LINKS.junction,
+    "no symlink kind could be created — I9 coverage would be vacuous on this machine");
 });
 
 /* ── the silent-corruption regression ──────────────────────────────────────

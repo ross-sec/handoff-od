@@ -10,7 +10,8 @@
 import { existsSync, readFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
-  args, die, readState, readJson, writeText, walk, slugify, slugSafe, childDir, Gates, posix, NEVER_SHIP,
+  args, die, readState, readJson, writeText, walk, slugify, slugSafe, childDir, isUnder,
+  Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
 const a = args();
@@ -38,8 +39,17 @@ const selected = typeof a.files === "string"
   : (stem ? all.filter((f) => /\.(dc\.html|html)$/i.test(f) && !f.includes("/") &&
       slugify(basename(f)).includes(stem)) : []);
 
+// I9 — `--files` is raw user input and bypasses `walk`, so it is the one way an
+// arbitrary path reaches copyFileSync. `../../../secrets.env` exists, and would
+// otherwise be copied into a spec folder that then ships inside the bundle.
+const escaping = (selected.length ? selected : []).filter((f) => !isUnder(project.dir, f));
+if (escaping.length) {
+  die(`I9 — --files must stay inside the project:\n${escaping.map((f) => `  ${f}`).join("\n")}\n` +
+    `  Paths are relative to ${project.dir}.`);
+}
+
 const prototypes = (selected.length ? selected : (entry.file ? [entry.file] : []))
-  .filter((f) => existsSync(join(project.dir, f)));
+  .filter((f) => existsSync(join(project.dir, f)) && isUnder(project.dir, f));
 
 for (const rel of prototypes) copyFileSync(join(project.dir, rel), join(dir, "prototypes", basename(rel)));
 

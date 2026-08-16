@@ -2,6 +2,64 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.5] - 2026-08-16
+
+Found in review round 2 of the Open Design catalog submission (nexu-io/open-design#6948).
+**Anyone on 0.1.4 or earlier should upgrade** — a bundle built from a project containing symlinks
+could carry files from outside that project.
+
+### Added
+
+- **I9 — nothing outside the project directory is ever mirrored, named or read.** A new invariant,
+  documented in `references/bundle-contract.md`, enforced by gates in phases 00, 01 and 03.
+
+### Fixed
+
+- **A symlink to a file outside the project was mirrored as its target's content.** `walk()`
+  classified entries with `Dirent.isDirectory()`, which describes the *link*, not what it points at,
+  so every symlink was treated as a file and handed to `copyFileSync` — which follows it. Reproduced
+  against 0.1.4: a project link named `linked-secret.txt` pointing at an external `creds.env` put
+  `AWS_SECRET_ACCESS_KEY=hunter2` into the bundle as an ordinary file, from where it would have
+  travelled inside the archive. Such links are now refused, and named in the gate output.
+
+- **A symlink to a directory aborted the handoff.** The same misclassification sent directory links
+  to `copyFileSync`, which throws `EISDIR` on POSIX and `EPERM` on Windows — an unhandled exception
+  partway through the mirror, leaving a half-written bundle. Directory links are now classified
+  before anything is copied.
+
+- **The refusal happens before `--force` deletes the previous bundle.** Ordering the check after the
+  rebuild would have cost the user a good bundle and produced nothing in its place.
+
+- **A symlink could smuggle an excluded path into a bundle.** A link inside the project pointing at
+  `node_modules/`, `.git/` or sync bookkeeping resolved to an excluded target under an innocent name.
+  The exclude list is now applied to the resolved target as well as the link.
+
+- **Raw path input bypassed the walker entirely** — the same disclosure through a different door,
+  no symlink required. `hod-spec.js --files ../../secrets.env` copied an external file into a spec
+  folder that then ships; `hod-prompt.js --focus` named external paths for the receiving agent to
+  open; `hod-detect.js --entry` accepted a path outside `--project-dir`; and `designSystem.dir`, read
+  back from a hand-editable `state.json`, was trusted because phase 00 had produced it. All four are
+  now checked against the project root, symlinks resolved.
+
+### Changed
+
+- Symlinks resolving **inside** the project are followed and materialized as their target's content,
+  rather than rejected wholesale. A bundle has to be self-contained, and zip/tar plus a Windows
+  extract would flatten or break a preserved link. Directory links are walked into, with a loop guard.
+- `walk()` now returns regular files only. A fifo, socket or device node would hang or fail the copy
+  and is never a design file.
+- Phase 03 asserts the finished bundle contains **no** symlinks at all — any survivor is a hole the
+  archive would flatten or drop.
+
+### Tests
+
+- 17 new tests (54 total, green on Linux and Windows): file and directory links with targets inside
+  and outside the project, dangling links, a link into an excluded directory, a symlink loop, an
+  internal link surviving the full detect → bundle → validate run as real content, a symlink planted
+  into a built bundle, `--force` refusing without destroying the previous bundle, and the four raw
+  path-input escapes. The suite probes for symlink support at startup and fails loudly if no link
+  kind can be created, so the coverage can never pass vacuously.
+
 ## [0.1.4] - 2026-08-16
 
 Found in review of the Open Design catalog submission (nexu-io/open-design#6948). **Anyone on 0.1.3
