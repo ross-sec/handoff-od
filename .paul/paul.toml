@@ -1,0 +1,32 @@
+name = "handoff-od"
+version = "0.1.0"
+status = "active"
+path = "plugins/handoff-od"
+tags = []
+
+[paul]
+version = "1.4"
+source = "https://chrisai.cv/skool"
+
+[milestone]
+name = "v0.1 Initial Release"
+version = "0.1.0"
+status = "in_progress"
+phases = 4
+
+[phase]
+number = 1
+name = "Build the plugin"
+status = "complete"
+plans_completed = 1
+
+[loop]
+position = "IDLE"
+
+[satellite]
+groom = true
+
+[stats]
+total_plans = 1
+total_phases = 4
+last_activity = "2026-08-16T03:00:00Z"
