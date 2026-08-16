@@ -1,11 +1,11 @@
 ---
 name: handoff-od
-description: "Hand an Open Design project off to OpenCode — the open-source counterpart of Claude Design's design-to-code handoff, same process, both ends open. Emits a copyable MCP prompt as the primary path, plus an offline-complete <Project>-handoff.zip carrying a verbatim project mirror, the materialized design system with real font binaries, and a generated oxlint adherence config that makes design fidelity machine-checkable. Optionally authors a full per-screen implementation spec. Harness-neutral, so the same bundle drops into Claude Code, Cursor, Codex or Pi. Triggers: handoff-od, /handoff-od, hand off to OpenCode, export this design for a coding agent, design-to-code handoff, Open Design to code."
+description: "Use this plugin when you want to hand an Open Design project off to OpenCode — or to Claude Code, Cursor, Codex or Pi — as something a coding agent can implement from faithfully. It is the open-source counterpart of the proprietary design-to-code handoff: same process, both ends open. Emits a copyable MCP prompt as the primary path, plus an offline-complete <Project>-handoff.zip carrying a verbatim project mirror, the design system materialized with real font binaries, and a generated oxlint adherence config that makes design fidelity machine-checkable. Optionally authors a full per-screen implementation spec. Triggers: handoff-od, /handoff-od, hand off to OpenCode, export this design for a coding agent, design-to-code handoff, Open Design to code."
 license: MIT
 metadata:
   author: Andre Ross
   organization: Ross Technologies
-  version: '0.1.2'
+  version: '0.1.3'
 ---
 
 # Handoff to OpenCode
