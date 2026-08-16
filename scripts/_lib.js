@@ -324,18 +324,72 @@ export function archive(parentDir, rootName, outFile) {
  * Entry count of an existing archive. Zip is read from its End-of-Central-Directory
  * record rather than shelled out, so it does not depend on which tar is on PATH.
  */
-export function archiveEntryCount(outFile) {
+export function archiveEntries(outFile) {
   if (!outFile.toLowerCase().endsWith(".zip")) {
     const { exe, extra } = resolveTar();
-    const out = run(exe, [...extra, "-tzf", outFile], dirname(outFile)).toString();
-    return out.split(/\r?\n/).filter((l) => l.trim() && !l.trim().endsWith("/")).length;
+    return run(exe, [...extra, "-tzf", outFile], dirname(outFile)).toString()
+      .split(/\r?\n/).map((l) => l.trim().replace(/^\.\//, "")).filter(Boolean);
   }
   const buf = readFileSync(outFile);
+  let eocd = -1;
   const floor = Math.max(0, buf.length - 22 - 65535);
   for (let i = buf.length - 22; i >= floor; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) return buf.readUInt16LE(i + 10);
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   }
-  return -1;
+  if (eocd < 0) return [];
+
+  const count = buf.readUInt16LE(eocd + 10);
+  const names = [];
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count && p + 46 <= buf.length; n++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const nameLen = buf.readUInt16LE(p + 28);
+    names.push(buf.toString("utf8", p + 46, p + 46 + nameLen).replace(/^\.\//, ""));
+    p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+  }
+  return names;
+}
+
+/** File entries only — directory markers are not deliverables. */
+export const archiveEntryCount = (outFile) =>
+  archiveEntries(outFile).filter((e) => !e.endsWith("/")).length;
+
+/* ── binding a verdict to the tree it inspected ─────────────────────────── */
+
+/**
+ * A deterministic digest of a directory's contents: every relative path and a hash
+ * of its bytes, in walk order. Two trees with the same digest hold the same files.
+ *
+ * This is what binds a phase-03 verdict to the bundle it actually inspected. Without
+ * it the verdict is a claim about a *path*, and a path can be rebuilt or edited
+ * underneath it — so phase 04 would archive a tree phase 03 never saw while I8 still
+ * claimed otherwise. Content only: mtimes and build timestamps are deliberately not
+ * hashed, so an identical rebuild stays valid and a changed one does not.
+ */
+export function hashTree(root) {
+  const files = walk(root);
+  const h = createHash("sha256");
+  for (const rel of files) {
+    h.update(rel, "utf8");
+    h.update("\0");
+    h.update(createHash("sha256").update(readFileSync(join(root, rel))).digest());
+    h.update("\n");
+  }
+  return { hash: h.digest("hex"), files };
+}
+
+/**
+ * Drop the phase-03 verdict and the phase-04 record. Called before any mutation of
+ * the bundle: a verdict must never outlive the tree it describes, and deleting it is
+ * the half of that guarantee that does not depend on anyone recomputing anything.
+ */
+export function clearVerdict(outRoot) {
+  const dropped = [];
+  for (const name of ["validate.json", "archive.json"]) {
+    const p = join(outRoot, STATE_DIR, name);
+    if (existsSync(p)) { rmSync(p, { force: true }); dropped.push(name); }
+  }
+  return dropped;
 }
 
 /* ── gates & reporting ──────────────────────────────────────────────────── */

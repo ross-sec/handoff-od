@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   args, die, readState, readJson, writeJson, walk, childDir, symlinkScan, describeUnsafe,
-  featureDirName, TODO_MARKER, Gates, TEXTUAL, SYNC_BOOKKEEPING,
+  featureDirName, TODO_MARKER, hashTree, Gates, TEXTUAL, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { verifyAdherence } from "./_adherence.js";
 
@@ -154,6 +154,14 @@ g.check("no screenshots at root", !files.some((f) => !f.includes("/") && /\.(png
 // the file nor an error.
 /* The advertised deliverables, checked against the built tree — the archive is made
  * from this directory, so whatever is missing here is missing from the zip. */
+
+// Same stale-state family as the verdict: the entry file was resolved at phase 00 and
+// the README names it as the first thing to read. If it was renamed or deleted before
+// the mirror was taken, the bundle instructs the agent to open a path it does not have.
+if (state.entry?.file) {
+  g.check("the README's entry file is in the mirror", files.includes(`project/${state.entry.file}`),
+    `project/${state.entry.file}`);
+}
 if ((options.depth ?? "both") === "both" && options.feature) {
   const specPrefix = `project/${featureDirName(options.feature)}/`;
   const specFiles = files.filter((f) => f.startsWith(specPrefix));
@@ -196,9 +204,19 @@ if (designSystem) {
   }
 }
 
-// I8: the archive phase refuses to run without this verdict.
+/* I8: the archive phase refuses to run without this verdict — and the verdict is
+ * bound to the exact tree it describes. A digest over the bundle's contents is what
+ * makes "phase 03 passed" a statement about files rather than about a path: phase 04
+ * recomputes it and refuses on any difference, so a rebuild or a hand-edit after
+ * validation cannot be archived under a verdict that never saw it. */
+const inspected = hashTree(bundleRoot);
 writeJson(join(outRoot, ".handoff", "validate.json"), {
-  at: new Date().toISOString(), root: project.slug, ok: g.passed, gates: g.rows,
+  at: new Date().toISOString(),
+  root: project.slug,
+  ok: g.passed,
+  treeHash: inspected.hash,
+  fileCount: inspected.files.length,
+  gates: g.rows,
 });
 
 g.finish();

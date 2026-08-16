@@ -3,7 +3,7 @@
   "specVersion": "1.0.0",
   "name": "handoff-od",
   "title": "Handoff to OpenCode",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Hand this project off to OpenCode — an offline-complete handoff bundle with a verbatim project mirror, the design system materialized with real font binaries, a machine-enforced adherence config, and an optional authored implementation spec. Harness-neutral: the same bundle drops into Claude Code, Cursor, Codex or Pi.",
   "license": "MIT",
   "author": {

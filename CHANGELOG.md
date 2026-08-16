@@ -2,6 +2,58 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.7] - 2026-08-16
+
+Found in review round 4 of the Open Design catalog submission (nexu-io/open-design#6948).
+**Anyone on 0.1.6 or earlier should upgrade** — phase 04 could archive a tree phase 03 never
+inspected, while I8 claimed the opposite.
+
+### Fixed
+
+- **The phase-03 verdict could outlive the bundle it described.** `.handoff/validate.json` carried
+  only `ok`, the root slug and gate rows — a claim about a *path*, not about a tree. Two ways to
+  exploit it, both reproduced against 0.1.6:
+  - `hod-bundle.js --force` replaced the entire bundle without removing the verdict, and phase 04
+    accepted it;
+  - editing the built tree after validation shipped the edit. A planted `EXFIL.txt` — exactly what
+    phase 03 rejects as a root-purity violation — went into the zip, vouched for by a verdict that
+    never saw it.
+
+  The checks skipped this way are not cosmetic: root purity, symlink rejection, spec completeness
+  and adherence consistency all live in phase 03. Fixed with two independent mechanisms, because
+  either alone leaves a hole:
+  - **cleared on mutation** — phase 01 deletes `validate.json` and `archive.json` before touching
+    the bundle, and *after* its own refusals, so a rejected build never costs a good verdict;
+  - **bound to a digest** — phase 03 records a `treeHash` over every path and its content, and
+    phase 04 recomputes it and refuses on any difference. Content only, no timestamps, so an
+    identical rebuild stays valid and a changed one does not.
+
+- **Phase 04 verified the archive by entry count.** `entries >= treeCount` accepts an archive that
+  dropped one file and gained another, and counted directory markers as entries. It now reads each
+  archive back and compares the *set* of file entries to the validated file list, reporting exactly
+  what is missing or unexpected.
+
+- **A symlink planted after validation would not have changed the digest** — the walk that feeds it
+  refuses unsafe links — but the archiver would still follow one. Phase 04 now checks the bundle for
+  symlinks directly before archiving.
+
+- **A verdict written by 0.1.6 or earlier carries no digest** and is refused rather than trusted,
+  as is a verdict whose `root` names a different bundle.
+
+- **The README's entry file was never confirmed to be in the mirror.** Same stale-state family: the
+  entry is resolved at phase 00 and the README names it as the first thing to read, so a file
+  renamed or deleted before the mirror was taken left the bundle pointing at a path it did not
+  contain. Phase 03 now checks it.
+
+### Tests
+
+- 11 new tests (75 total, green on Linux and Windows), including the two regression fixtures this
+  round asked for: a `--force` rebuild makes archive creation fail until phase 03 runs again, and a
+  post-validation mutation does the same. Also covered: an edit that leaves the file count unchanged,
+  a deletion, a digest-less verdict from an older release, a verdict naming another bundle, a
+  symlink planted after validation, an identical rebuild *keeping* its digest, and the archive being
+  verified against the validated set rather than a count.
+
 ## [0.1.6] - 2026-08-16
 
 Found in review round 3 of the Open Design catalog submission (nexu-io/open-design#6948). The

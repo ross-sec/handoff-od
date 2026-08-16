@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, lstatSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, lstatSync, statSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -402,6 +402,149 @@ test("a hand-edited designSystem.dir cannot escape the project", () => {
   const b = run("hod-bundle.js", [], out);
   assert.equal(b.code, 2, b.out);
   assert.match(b.out, /designSystem\.dir .* resolves outside the project/);
+});
+
+/* ── I8, properly: a verdict must not outlive the tree it describes ─────────
+ * `.handoff/validate.json` used to carry only `ok`, the root slug and gate rows —
+ * a claim about a PATH. `hod-bundle.js --force` replaced the whole bundle without
+ * removing it, and a hand-edit could add a file phase 03 would have rejected; phase
+ * 04 checked `verdict?.ok` and archived either one. The omitted checks include root
+ * purity, symlink rejection, spec completeness and adherence consistency. */
+
+const validated = (out) => JSON.parse(readFileSync(join(out, ".handoff", "validate.json"), "utf8"));
+
+function builtAndValidated() {
+  const { proj, out } = project();
+  assert.equal(detect(proj, out, ["--entry", "Landing.dc.html"]).code, 0);
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  assert.equal(run("hod-validate.js", [], out).code, 0);
+  return { proj, out };
+}
+
+test("the verdict is bound to a digest of the tree it inspected", () => {
+  const { out } = builtAndValidated();
+  const v = validated(out);
+  assert.match(v.treeHash, /^[0-9a-f]{64}$/);
+  assert.equal(v.fileCount, readdirSync(join(out, "fixture-project"), { recursive: true })
+    .filter((f) => !statSync(join(out, "fixture-project", f)).isDirectory()).length);
+  assert.equal(v.ok, true);
+});
+
+test("a --force rebuild clears the verdict, and phase 04 refuses until 03 runs again", () => {
+  const { out } = builtAndValidated();
+
+  const b = run("hod-bundle.js", ["--force"], out);
+  assert.equal(b.code, 0, b.out);
+  assert.match(b.out, /PASS {2}stale phase-03 verdict cleared — I8 — dropped validate\.json/);
+  assert.ok(!existsSync(join(out, ".handoff", "validate.json")), "the verdict must not survive a rebuild");
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /phase 03 has not passed/);
+  assert.ok(!existsSync(join(out, "Fixture Project-handoff.zip")));
+
+  assert.equal(run("hod-validate.js", [], out).code, 0);
+  assert.equal(run("hod-archive.js", ["--format", "zip"], out).code, 0, "and passes once 03 runs again");
+});
+
+test("a file added after validation makes phase 04 refuse", () => {
+  const { out } = builtAndValidated();
+  // Exactly what phase 03 would have rejected as a root-purity violation.
+  writeFileSync(join(out, "fixture-project", "EXFIL.txt"), "AWS_SECRET_ACCESS_KEY=hunter2");
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /the bundle changed after it was validated/);
+  assert.ok(!existsSync(join(out, "Fixture Project-handoff.zip")), "nothing was written");
+
+  // And 03 does reject it, so the refusal is not merely paranoia.
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 1);
+  assert.match(v.out, /FAIL {2}root purity/);
+});
+
+test("editing a validated file makes phase 04 refuse, even with the count unchanged", () => {
+  const { out } = builtAndValidated();
+  const before = validated(out).fileCount;
+  writeFileSync(join(out, "fixture-project", "project", "Landing.dc.html"), "<h1>swapped</h1>");
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /same count, different content/);
+  assert.equal(validated(out).fileCount, before);
+});
+
+test("deleting a validated file makes phase 04 refuse", () => {
+  const { out } = builtAndValidated();
+  rmSync(join(out, "fixture-project", "AGENTS.md"));
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /the bundle changed after it was validated/);
+});
+
+test("a verdict from a previous release, with no digest, is refused", () => {
+  const { out } = builtAndValidated();
+  const path = join(out, ".handoff", "validate.json");
+  const v = validated(out);
+  delete v.treeHash;                       // exactly what v0.1.6 and earlier wrote
+  writeFileSync(path, JSON.stringify(v));
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /predates tree binding/);
+});
+
+test("a verdict for a different bundle is refused", () => {
+  const { out } = builtAndValidated();
+  const path = join(out, ".handoff", "validate.json");
+  writeFileSync(path, JSON.stringify({ ...validated(out), root: "some-other-bundle" }));
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /describes a different bundle/);
+});
+
+test("an identical rebuild keeps the digest, so re-validating is cheap and honest", () => {
+  const { out } = builtAndValidated();
+  const first = validated(out).treeHash;
+  run("hod-bundle.js", ["--force"], out);
+  assert.equal(run("hod-validate.js", [], out).code, 0);
+  assert.equal(validated(out).treeHash, first,
+    "content-only digest: an unchanged rebuild must not invalidate itself");
+});
+
+test("the archive is verified to carry exactly the validated tree, not merely enough entries", () => {
+  const { out } = builtAndValidated();
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 0, a.out);
+  assert.match(a.out, /PASS {2}zip carries exactly the validated tree/);
+
+  const listing = zipEntries(join(out, "Fixture Project-handoff.zip")).filter((e) => !e.endsWith("/"));
+  const expected = validated(out).fileCount;
+  assert.equal(listing.length, expected, `${listing.length} entries for ${expected} validated files`);
+  assert.ok(listing.every((e) => e.startsWith("fixture-project/")));
+});
+
+test("a symlink planted after validation is refused at phase 04", { skip: !canLink }, () => {
+  const { proj, out } = builtAndValidated();
+  // The digest walk refuses unsafe links, so this would not change the hash — but the
+  // archiver would follow it. Phase 04 checks for links in the bundle directly.
+  symlinkSync(join(proj, "support.js"), join(out, "fixture-project", "late.js"), "file");
+
+  const a = run("hod-archive.js", ["--format", "zip"], out);
+  assert.equal(a.code, 2, a.out);
+  assert.match(a.out, /I9 — the bundle contains symlinks/);
+});
+
+test("the README's entry file must survive into the mirror", () => {
+  const { proj, out } = project();
+  detect(proj, out, ["--entry", "Landing.dc.html"]);
+  rmSync(join(proj, "Landing.dc.html"));      // renamed or deleted between phases
+
+  run("hod-bundle.js", [], out);
+  const v = run("hod-validate.js", [], out);
+  assert.equal(v.code, 1, v.out);
+  assert.match(v.out, /FAIL {2}the README's entry file is in the mirror/);
 });
 
 /* ── I10: an advertised option is a promise ─────────────────────────────────

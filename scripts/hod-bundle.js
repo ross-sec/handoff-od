@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   args, die, readState, readJson, writeJson, writeText, copyTree, walk,
   childDir, isUnder, symlinkScan, describeUnsafe, featureDirName, TODO_MARKER,
-  Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
+  clearVerdict, Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { buildAdherence, collectComponents } from "./_adherence.js";
 
@@ -72,6 +72,13 @@ if (links.unsafe.length) {
     `  mirror on a directory link. Remove them, or replace them with real copies inside the\n` +
     `  project, then re-run phase 01. Nothing has been written or deleted.`);
 }
+
+/* Every refusal above this line leaves the workspace untouched. From here on the
+ * bundle changes, so the phase-03 verdict describing the old one has to go first —
+ * `--force` used to replace the whole tree while validate.json survived, and phase 04
+ * accepted it. Clearing is the half of the guarantee that does not depend on anyone
+ * recomputing a digest; the digest is the half that survives a stray hand-edit. */
+const dropped = clearVerdict(outRoot);
 
 if (existsSync(bundleRoot)) {
   if (!a.force) die(`${project.slug}/ already exists — pass --force to rebuild`);
@@ -243,6 +250,8 @@ if (depth === "both" && options.feature) {
 if (options.includeChats) {
   g.check("conversation transcript included", chats > 0, `chats/ — ${chats} file(s)`);
 }
+g.check("stale phase-03 verdict cleared — I8", !existsSync(join(outRoot, ".handoff", "validate.json")),
+  dropped.length ? `dropped ${dropped.join(", ")} — run phase 03 again` : "none to clear");
 
 if (designSystem) {
   const dsPrefix = designSystem.dir === "." ? "project/" : `project/${designSystem.dir}/`;

@@ -139,9 +139,38 @@ Likewise: never `HANDOFF.md`, never `IMPLEMENTATION.md`. The instruction file is
 | I5 | No manifest, no screenshots — convention over schema |
 | I6 | `README.md` is the sole instruction carrier; pointers point, never duplicate |
 | I7 | Adherence config only when a design system is bound; derived, never hand-written |
-| I8 | Archive only after phase 03 writes `ok: true` |
+| I8 | Archive only after phase 03 writes `ok: true` **for the tree being archived** |
 | I9 | Nothing outside the project directory is ever mirrored, named or read |
 | I10 | An advertised option is a promise: every declared input is wired to behaviour and checked by a gate |
+
+### I8 in practice
+
+"Unvalidated" has to mean *this tree*, not a tree that once lived at this path. A
+verdict carrying only `ok` is a claim about a path, and a path can be rebuilt or
+edited underneath it — so phase 04 would archive a tree phase 03 never inspected
+while I8 still claimed otherwise. The omitted checks are not cosmetic: root purity,
+symlink rejection, spec completeness and adherence consistency all live in phase 03.
+
+Two independent mechanisms, because either alone leaves a hole:
+
+1. **Cleared on mutation.** Phase 01 deletes `.handoff/validate.json` and
+   `archive.json` before it touches the bundle — after its own refusals, so a
+   *rejected* build never costs you a good verdict. A `--force` rebuild therefore
+   leaves nothing for phase 04 to accept.
+2. **Bound to a digest.** Phase 03 records a `treeHash` over every path and its
+   content, and phase 04 recomputes it and refuses on any difference. That covers the
+   edit phase 01 never saw. Content only — no mtimes, no build timestamps — so an
+   identical rebuild stays valid and a changed one does not.
+
+Phase 04 additionally reads each archive back and compares its file entries to the
+validated set. A count comparison would accept an archive that dropped one file and
+gained another; only the set answers "is this the thing phase 03 passed?". And
+because the digest walk refuses unsafe symlinks, a link planted after validation
+would not change the hash — so phase 04 checks the bundle for links directly before
+the archiver can follow one.
+
+A verdict written by a release that predates the digest is refused rather than
+trusted.
 
 ### I9 in practice
 

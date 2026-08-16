@@ -159,7 +159,10 @@ Never report success while any phase printed `BLOCKED`.
 |---|---|---|
 | `no .handoff/state.json` | phase 00 not run, or wrong `--out` | re-run 00 with the same `--out` |
 | `<slug>/ already exists` | rebuilding | add `--force` |
-| `phase 03 has not passed` | archiving before validating | run 03; fix any `FAIL` |
+| `phase 03 has not passed` | archiving before validating, or after a rebuild cleared the verdict | run 03; fix any `FAIL` |
+| `the bundle changed after it was validated` | the tree was edited after 03 | run 03 again — it re-checks root purity, symlinks, spec and adherence |
+| `the verdict predates tree binding` | verdict written by ≤ 0.1.6 | run 03 again |
+| `carries exactly the validated tree` fails | the archiver dropped or added entries | check disk space and the zip writer, then re-run 04 |
 | `no working zip writer` | no bsdtar / Info-ZIP on PATH | `--format targz`, or install `zip` |
 | `mirrored N/M files` mismatch | a file could not be copied — permissions, or it vanished mid-copy | fix the source, re-run 01 `--force` |
 | adherence disagrees with manifest | hand-edited config | delete it and re-run 01 `--force` |

@@ -8,7 +8,8 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, walk, archive, archiveEntryCount, childDir, Gates,
+  args, die, readState, readJson, writeJson, archive, archiveEntries, childDir,
+  hashTree, symlinkScan, describeUnsafe, Gates,
 } from "./_lib.js";
 
 const a = args();
@@ -28,12 +29,43 @@ const archiveBase =
     .replace(/^[.\s]+|[.\s]+$/g, "") ||
   project.slug;
 
-// I8 — never archive an unvalidated tree.
+/* ── I8 — never archive an unvalidated tree ─────────────────────────────────
+ * "Unvalidated" has to mean *this* tree, not a tree that once lived at this path.
+ * A verdict carrying only `ok` is a claim about a path: `--force` could replace the
+ * whole bundle, or a hand-edit could add a file phase 03 would have rejected, and
+ * this phase would archive it under the old verdict. So the verdict carries a digest
+ * of what it inspected, and it is recomputed here. */
+
 const verdict = readJson(join(outRoot, ".handoff", "validate.json"));
 if (!verdict?.ok) die("phase 03 has not passed — run hod-validate.js first (I8: archive only after validate)");
+if (verdict.root !== project.slug) {
+  die(`the verdict describes a different bundle (${verdict.root}/, not ${project.slug}/) — run phase 03`);
+}
+if (!verdict.treeHash) {
+  die(`the verdict predates tree binding and cannot be trusted — run hod-validate.js again`);
+}
+
+const current = hashTree(bundleRoot);
+if (current.hash !== verdict.treeHash) {
+  const delta = current.files.length - (verdict.fileCount ?? 0);
+  die(`the bundle changed after it was validated — refusing to archive it (I8).\n` +
+    `  validated: ${verdict.treeHash.slice(0, 16)}…  (${verdict.fileCount} files, ${verdict.at})\n` +
+    `  on disk:   ${current.hash.slice(0, 16)}…  (${current.files.length} files${delta ? `, ${delta > 0 ? "+" : ""}${delta}` : ", same count, different content"})\n` +
+    `  Phase 03 checks root purity, symlinks, spec completeness and adherence — none of\n` +
+    `  which have been applied to what is on disk now. Run hod-validate.js again.`);
+}
+
+// A symlink added after validation would not change the digest, because the walk
+// that feeds it refuses unsafe links — but the archiver would still follow one.
+const strayLinks = symlinkScan(bundleRoot);
+if (strayLinks.followed.length || strayLinks.unsafe.length) {
+  die(`I9 — the bundle contains symlinks and must not be archived:\n` +
+    describeUnsafe([...strayLinks.unsafe, ...strayLinks.followed.map((l) => ({ ...l, reason: "link in a built bundle" }))]));
+}
 
 const format = a.format ?? "both";
-const treeCount = walk(bundleRoot).length;
+const expected = new Set(current.files.map((f) => `${project.slug}/${f}`));
+const treeCount = current.files.length;
 const written = [];
 
 for (const ext of format === "both" ? ["zip", "tar.gz"] : [format === "targz" ? "tar.gz" : "zip"]) {
@@ -44,15 +76,31 @@ for (const ext of format === "both" ? ["zip", "tar.gz"] : [format === "targz" ? 
     die(`archiving ${ext} failed: ${String(err.message ?? err).split("\n")[0]}\n` +
       `  zip needs Info-ZIP \`zip\` or bsdtar; tar.gz needs \`tar\`.`);
   }
-  written.push({ format: ext, path: outFile, bytes: statSync(outFile).size, entries: archiveEntryCount(outFile) });
+  // Read the archive back and compare its file entries to the validated set. A count
+  // comparison would accept a zip that dropped one file and gained another; only the
+  // set answers "is the thing on disk the thing phase 03 passed?".
+  const inArchive = new Set(archiveEntries(outFile).filter((e) => !e.endsWith("/")));
+  const missing = [...expected].filter((f) => !inArchive.has(f));
+  const extra = [...inArchive].filter((f) => !expected.has(f));
+
+  written.push({
+    format: ext, path: outFile, bytes: statSync(outFile).size,
+    entries: inArchive.size, missing, extra,
+  });
 }
 
-writeJson(join(outRoot, ".handoff", "archive.json"), { at: new Date().toISOString(), treeCount, written });
+writeJson(join(outRoot, ".handoff", "archive.json"), {
+  at: new Date().toISOString(), treeCount, treeHash: current.hash, written,
+});
 
 const g = new Gates("04 archive");
 for (const w of written) {
-  g.check(`${w.format} complete`, w.entries >= treeCount,
-    `${w.entries}/${treeCount} entries, ${(w.bytes / 1024).toFixed(0)} KB`);
+  const problems = [
+    w.missing.length ? `${w.missing.length} missing (${w.missing.slice(0, 3).join(", ")})` : "",
+    w.extra.length ? `${w.extra.length} unexpected (${w.extra.slice(0, 3).join(", ")})` : "",
+  ].filter(Boolean).join("; ");
+  g.check(`${w.format} carries exactly the validated tree`, !problems,
+    problems || `${w.entries}/${treeCount} entries, ${(w.bytes / 1024).toFixed(0)} KB`);
 }
 console.log(`\nDeliverable(s):\n${written.map((w) => `  ${w.path}`).join("\n")}`);
 g.finish();
