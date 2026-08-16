@@ -2,6 +2,15 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.2] - 2026-08-16
+
+### Fixed
+
+- **GitHub Packages publish went to the wrong registry.** `actions/setup-node` writes
+  `@ross-sec:registry=https://registry.npmjs.org/` into `.npmrc`, and a *scoped* registry mapping
+  takes precedence over `--registry`. The step therefore re-published to npmjs and failed instead of
+  reaching `npm.pkg.github.com`. It now rewrites `.npmrc` before publishing.
+
 ## [0.1.1] - 2026-08-16
 
 Validated against a running Open Design daemon (0.15.1). Everything below was found by the real

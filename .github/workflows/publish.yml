@@ -51,11 +51,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Configure GitHub Packages registry
-        run: npm config set //npm.pkg.github.com/:_authToken ${{ secrets.GITHUB_TOKEN }}
-
+      # `setup-node` writes `@ross-sec:registry=https://registry.npmjs.org/` into
+      # .npmrc, and a SCOPED registry mapping beats `--registry`. Without replacing
+      # that line this step silently re-publishes to npmjs instead of GitHub.
       - name: Publish to GitHub Packages
-        run: npm publish --registry=https://npm.pkg.github.com --access=public
+        run: |
+          cat > .npmrc <<'EOF'
+          @ross-sec:registry=https://npm.pkg.github.com
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          EOF
+          npm publish --registry=https://npm.pkg.github.com --access=public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
