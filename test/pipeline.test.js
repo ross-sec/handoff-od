@@ -222,7 +222,12 @@ test("a project name with no Latin characters bundles into its own directory, ne
 test("bundle refuses any state.json slug that resolves to or above the output directory", () => {
   // v0.1.3 wrote empty slugs to disk, so state.json cannot be trusted just because
   // detect validates its own output — the guard has to sit where the delete happens.
-  for (const slug of ["", ".", "..", "../escape", "a/../..", "/abs", "C:\\abs"]) {
+  // `C:\abs` is only absolute on Windows; on POSIX a backslash is an ordinary
+  // filename character, so it IS a legitimate child there and must not be refused.
+  const escaping = ["", ".", "..", "../escape", "a/../..", "/abs",
+    ...(process.platform === "win32" ? ["C:\\abs", "\\\\server\\share"] : [])];
+
+  for (const slug of escaping) {
     const { proj, out } = project();
     writeFileSync(join(out, "SENTINEL.txt"), "must survive");
     assert.equal(detect(proj, out).code, 0);
