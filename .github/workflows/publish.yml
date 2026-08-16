@@ -1,0 +1,90 @@
+name: Publish @ross-sec/handoff-od
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!README.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+  publish:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@ross-sec'
+
+      # Zero dependencies by design — there is nothing to install and nothing to build.
+      - name: Test
+        run: npm test
+
+      - name: Self-check (manifest, SKILL.md, closed atom catalog)
+        run: npm run validate
+
+      - name: Publish to npmjs.org
+        run: npm publish --access=public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Configure GitHub Packages registry
+        run: npm config set //npm.pkg.github.com/:_authToken ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to GitHub Packages
+        run: npm publish --registry=https://npm.pkg.github.com --access=public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: handoff-od@v${{ needs.version.outputs.version }}
+          name: handoff-od v${{ needs.version.outputs.version }}
+          body: |
+            ## handoff-od v${{ needs.version.outputs.version }}
+
+            Hand an Open Design project off to a coding agent — a copyable MCP prompt, an
+            offline-complete handoff bundle, and design fidelity you can lint.
+
+            **Install:**
+            ```bash
+            npm i @ross-sec/handoff-od
+            od plugin install --source ./node_modules/@ross-sec/handoff-od
+            od plugin trust handoff-od --capabilities fs:read,fs:write,bash
+            ```
+
+            Or straight from git:
+            ```bash
+            od plugin install github:ross-sec/handoff-od@v${{ needs.version.outputs.version }}
+            ```
+
+            **Changes:** see [CHANGELOG.md](https://github.com/ross-sec/handoff-od/blob/main/CHANGELOG.md)
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

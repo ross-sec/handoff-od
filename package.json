@@ -1,0 +1,51 @@
+{
+  "name": "@ross-sec/handoff-od",
+  "version": "0.1.0",
+  "description": "Open Design plugin that hands a design project off to OpenCode — the open-source counterpart of Claude Design's design-to-code handoff. Offline-complete bundle, materialized design system, lintable adherence config, optional authored implementation spec.",
+  "type": "module",
+  "files": [
+    "SKILL.md",
+    "open-design.json",
+    "scripts",
+    "references",
+    "agents",
+    "preview",
+    "icon.svg",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "validate": "node scripts/hod-validate.js --self",
+    "prepublishOnly": "npm test && npm run validate"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ross-sec/handoff-od.git"
+  },
+  "homepage": "https://skills.ross-developers.com",
+  "bugs": {
+    "url": "https://github.com/ross-sec/handoff-od/issues"
+  },
+  "keywords": [
+    "open-design",
+    "open-design-plugin",
+    "handoff",
+    "claude-code",
+    "code-agent",
+    "opencode",
+    "design-handoff",
+    "design-tokens",
+    "design-system",
+    "design-to-code"
+  ],
+  "author": "Andre Ross <devops.ross@gmail.com> (https://ross-developers.com)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

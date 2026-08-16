@@ -1,0 +1,131 @@
+{
+  "$schema": "https://open-design.ai/schemas/plugin.v1.json",
+  "specVersion": "1.0.0",
+  "name": "handoff-od",
+  "title": "Handoff to OpenCode",
+  "version": "0.1.0",
+  "description": "Hand this project off to OpenCode — an offline-complete handoff bundle with a verbatim project mirror, the design system materialized with real font binaries, a machine-enforced adherence config, and an optional authored implementation spec. Harness-neutral: the same bundle drops into Claude Code, Cursor, Codex or Pi.",
+  "license": "MIT",
+  "author": {
+    "name": "Andre Ross / Ross Technologies",
+    "url": "https://ross-developers.com"
+  },
+  "homepage": "https://skills.ross-developers.com",
+  "icon": "./icon.svg",
+  "tags": [
+    "export",
+    "handoff",
+    "opencode",
+    "code-agent",
+    "design-to-code"
+  ],
+  "compat": {
+    "agentSkills": [
+      { "path": "./SKILL.md" }
+    ]
+  },
+  "od": {
+    "kind": "scenario",
+    "taskKind": "tune-collab",
+    "scenario": "downstream-export",
+    "mode": "handoff",
+    "platform": "desktop",
+    "engineRequirements": {
+      "od": ">=0.15.0"
+    },
+    "preview": {
+      "type": "html",
+      "entry": "./preview/index.html",
+      "motion": "static"
+    },
+    "useCase": {
+      "query": "Hand this project off to OpenCode. Build the handoff bundle with depth={{depth}} and transport={{transport}}, following the handoff-od skill: run the bundled scripts in order, verify every DONE-gate, and tell me the exact path of the finished archive."
+    },
+    "context": {
+      "skills": [
+        { "path": "./SKILL.md" }
+      ],
+      "atoms": [
+        "design-extract",
+        "token-map",
+        "todo-write",
+        "diff-review",
+        "handoff"
+      ]
+    },
+    "pipeline": {
+      "stages": [
+        { "id": "detect", "atoms": ["design-extract", "token-map"], "onFailure": "abort" },
+        { "id": "bundle", "atoms": ["todo-write"], "onFailure": "abort" },
+        { "id": "verify", "atoms": ["diff-review"], "onFailure": "abort" },
+        { "id": "handoff", "atoms": ["handoff"], "onFailure": "abort" }
+      ]
+    },
+    "genui": {
+      "surfaces": [
+        {
+          "id": "handoff-ready",
+          "kind": "confirmation",
+          "persist": "run",
+          "trigger": { "stageId": "handoff" },
+          "prompt": "Handoff bundle is ready in the project cwd. Open it in your coding agent?",
+          "timeout": 300000,
+          "onTimeout": "default",
+          "default": true
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "name": "depth",
+        "type": "select",
+        "label": "Depth",
+        "required": false,
+        "options": ["bundle", "spec", "both"],
+        "default": "both"
+      },
+      {
+        "name": "feature",
+        "type": "string",
+        "label": "Feature scope",
+        "required": false,
+        "placeholder": "auth system"
+      },
+      {
+        "name": "transport",
+        "type": "select",
+        "label": "Transport",
+        "required": false,
+        "options": ["zip", "mcp", "both"],
+        "default": "zip"
+      },
+      {
+        "name": "includeChats",
+        "type": "boolean",
+        "label": "Include conversation transcript",
+        "required": false,
+        "default": false
+      },
+      {
+        "name": "rootPointers",
+        "type": "boolean",
+        "label": "Emit AGENTS.md / CLAUDE.md pointers",
+        "required": false,
+        "default": true
+      },
+      {
+        "name": "verification",
+        "type": "boolean",
+        "label": "Add a visual-verification section to the spec",
+        "required": false,
+        "default": false
+      }
+    ],
+    "capabilities": [
+      "prompt:inject",
+      "fs:read",
+      "fs:write",
+      "bash"
+    ]
+  }
+}

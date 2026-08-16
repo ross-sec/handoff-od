@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tgz
+.env
+.handoff/
+.reference-private/
+docs/superpowers/plans/
