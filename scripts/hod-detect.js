@@ -2,7 +2,7 @@
 // Phase 00 — detect. Reads the Open Design project on disk and records every fact
 // the later phases need. Scripts never call MCP; the agent passes OD facts in as flags.
 //
-//   node scripts/hod-detect.js --project-name "IMAGE STUDIO UI APP" \
+//   node scripts/hod-detect.js --project-name "DESIGN SYSTEM KIT" \
 //        --project-dir <resolvedDir> [--entry "Landing.dc.html"] [--depth both] ...
 //
 // DONE-gate: entry mode recorded, design system resolved (or explicitly none),

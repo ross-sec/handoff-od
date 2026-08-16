@@ -12,7 +12,7 @@ export const STATE_PATH = join(STATE_DIR, "state.json");
 
 /* ── paths & io ─────────────────────────────────────────────────────────── */
 
-/** Lower-kebab slug. `Ross CSS - shadcn Set` -> `ross-css-shadcn-set`. */
+/** Lower-kebab slug. `Studio CSS - Base Set` -> `studio-css-base-set`. */
 export function slugify(name) {
   return String(name ?? "")
     .normalize("NFKD")

@@ -7,14 +7,14 @@ bundles, not from documentation.
 
 | Thing | Rule | Example |
 |---|---|---|
-| archive | `<Project Display Name>-handoff.zip` | `Orot Halahca App-handoff.zip` |
+| archive | `<Project Display Name>-handoff.zip` | `Nova Reader App-handoff.zip` |
 | companion | `<Project Display Name>-handoff.tar.gz` | — |
-| root dir | project name, lower-kebab | `orot-halahca-app/` |
+| root dir | project name, lower-kebab | `nova-reader-app/` |
 
 The `-handoff` suffix is the discriminator — a plain project export drops it. Slugging is NFKD
 normalize, strip diacritics, lowercase, every run of non-`[a-z0-9]` to `-`, collapse repeats, trim.
 
-Verified against four real project names, including `Ross CSS - shadcn Set` -> `ross-css-shadcn-set`.
+Verified against four real project names, including `Studio CSS - Base Set` -> `studio-css-base-set`.
 
 ## Tree
 

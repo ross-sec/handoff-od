@@ -7,9 +7,9 @@ import { slugify, walk, copyTree, archive, archiveEntryCount, Gates, args, NEVER
 
 test("slugify matches every known project name", () => {
   const cases = [
-    ["IMAGE STUDIO UI APP", "image-studio-ui-app"],
-    ["Ross CSS - shadcn Set", "ross-css-shadcn-set"],
-    ["Orot Halahca App", "orot-halahca-app"],
+    ["DESIGN SYSTEM KIT", "design-system-kit"],
+    ["Studio CSS - Base Set", "studio-css-base-set"],
+    ["Nova Reader App", "nova-reader-app"],
     ["AI Apple", "ai-apple"],
     ["Café  Déjà--Vu!", "cafe-deja-vu"],
     ["  leading and trailing  ", "leading-and-trailing"],
