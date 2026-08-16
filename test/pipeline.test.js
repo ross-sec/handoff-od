@@ -183,6 +183,77 @@ test("bundle refuses to clobber an existing tree without --force", () => {
   assert.equal(run("hod-bundle.js", ["--force"], out).code, 0);
 });
 
+/* ── the empty-slug deletion path (data loss) ───────────────────────────────
+ * `slugify("设计")` is "" — every character is outside [a-z0-9] — and
+ * `join(outRoot, "")` IS outRoot. Before the fix, `hod-bundle.js --force` ran
+ * `rmSync(outRoot, { recursive: true, force: true })` and deleted the entire
+ * output directory, which on the documented path is the user's cwd. Both halves
+ * of the fix are asserted: a non-empty slug, and a guard that refuses any slug
+ * resolving to outRoot no matter where it came from. */
+
+const readSlug = (out) =>
+  JSON.parse(readFileSync(join(out, ".handoff", "state.json"), "utf8")).project.slug;
+
+test("a project name with no Latin characters bundles into its own directory, never outRoot", () => {
+  const { proj, out } = project();
+  writeFileSync(join(out, "SENTINEL.txt"), "must survive a --force rebuild");
+
+  const d = run("hod-detect.js", ["--project-name", "设计", "--project-dir", proj], out);
+  assert.equal(d.code, 0, d.out);
+
+  const slug = readSlug(out);
+  assert.ok(slug, "the slug must never be empty");
+  assert.match(slug, /^[a-z0-9][a-z0-9-]*$/, slug);
+
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  // The deletion path itself.
+  assert.equal(run("hod-bundle.js", ["--force"], out).code, 0);
+
+  assert.ok(existsSync(join(out, "SENTINEL.txt")), "--force must not delete the output directory");
+  assert.ok(existsSync(join(out, slug, "README.md")), "the bundle is a real subdirectory");
+  assert.ok(existsSync(join(out, slug, "project", "Landing.dc.html")), "the mirror landed inside it");
+
+  // Same name, same directory — otherwise every run would orphan the last one.
+  const again = mkdtempSync(join(tmpdir(), "hod-again-"));
+  assert.equal(run("hod-detect.js", ["--project-name", "设计", "--project-dir", proj], again).code, 0);
+  assert.equal(readSlug(again), slug);
+});
+
+test("bundle refuses any state.json slug that resolves to or above the output directory", () => {
+  // v0.1.3 wrote empty slugs to disk, so state.json cannot be trusted just because
+  // detect validates its own output — the guard has to sit where the delete happens.
+  for (const slug of ["", ".", "..", "../escape", "a/../..", "/abs", "C:\\abs"]) {
+    const { proj, out } = project();
+    writeFileSync(join(out, "SENTINEL.txt"), "must survive");
+    assert.equal(detect(proj, out).code, 0);
+
+    const statePath = join(out, ".handoff", "state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.project.slug = slug;
+    writeFileSync(statePath, JSON.stringify(state));
+
+    for (const argv of [[], ["--force"]]) {
+      const b = run("hod-bundle.js", argv, out);
+      assert.equal(b.code, 2, `slug ${JSON.stringify(slug)} ${argv.join(" ")} — expected refusal, got:\n${b.out}`);
+      assert.match(b.out, /refusing to use project slug/);
+    }
+    assert.ok(existsSync(join(out, "SENTINEL.txt")), `slug ${JSON.stringify(slug)} deleted the output directory`);
+    assert.ok(existsSync(join(proj, "Landing.dc.html")), `slug ${JSON.stringify(slug)} deleted the project`);
+  }
+});
+
+test("the archive filename cannot carry a path out of the output directory", () => {
+  const { proj, out } = project();
+  assert.equal(run("hod-detect.js", ["--project-name", "../../pwned: v2", "--project-dir", proj], out).code, 0);
+  assert.equal(run("hod-bundle.js", [], out).code, 0);
+  assert.equal(run("hod-validate.js", [], out).code, 0);
+  assert.equal(run("hod-archive.js", ["--format", "zip"], out).code, 0);
+
+  const zips = readdirSync(out).filter((f) => f.endsWith(".zip"));
+  assert.deepEqual(zips, ["pwned v2-handoff.zip"]);
+  assert.ok(!existsSync(join(out, "..", "..", "pwned: v2-handoff.zip")));
+});
+
 /* ── spec scaffold ─────────────────────────────────────────────────────────── */
 
 test("spec scaffolds a skeleton that fails validation until the TODOs are written", () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { slugify, walk, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
+import { slugify, slugSafe, walk, copyTree, archive, archiveEntryCount, Gates, args, NEVER_SHIP } from "../scripts/_lib.js";
 
 test("slugify matches every known project name", () => {
   const cases = [
@@ -15,6 +15,35 @@ test("slugify matches every known project name", () => {
     ["  leading and trailing  ", "leading-and-trailing"],
   ];
   for (const [input, want] of cases) assert.equal(slugify(input), want, input);
+});
+
+/* ── the empty-slug data-loss path ──────────────────────────────────────────
+ * A project name written entirely outside [a-z0-9] slugifies to "", and
+ * `join(outRoot, "")` IS outRoot — so the bundle's `--force` rebuild used to
+ * target the output directory itself. `slugSafe` is the half of the fix that
+ * keeps such a project nameable; `childDir` is the half that makes it
+ * unrepresentable (see pipeline.test.js). */
+
+test("slugSafe is never empty, even for a name with no Latin characters at all", () => {
+  for (const name of ["设计", "дизайн", "🎨", "こんにちは", "-", "  ", "", null, undefined]) {
+    const slug = slugSafe(name);
+    assert.ok(slug, `empty slug for ${JSON.stringify(name)}`);
+    assert.match(slug, /^[a-z0-9][a-z0-9-]*$/, slug);
+    assert.notEqual(slug, ".");
+    assert.notEqual(slug, "..");
+  }
+});
+
+test("slugSafe is deterministic per name and distinct across names", () => {
+  assert.equal(slugSafe("设计"), slugSafe("设计"), "a rebuild must find the same directory");
+  assert.notEqual(slugSafe("设计"), slugSafe("デザイン"), "two projects must not share one directory");
+  assert.match(slugSafe("设计"), /^project-[0-9a-f]{8}$/);
+  assert.equal(slugSafe("设计", "feature").startsWith("feature-"), true);
+});
+
+test("slugSafe leaves any name that already slugifies alone", () => {
+  assert.equal(slugSafe("Nova Reader App"), "nova-reader-app");
+  assert.equal(slugSafe("设计 v2"), "v2", "one Latin token is enough — no digest needed");
 });
 
 function tree() {

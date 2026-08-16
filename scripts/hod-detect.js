@@ -10,7 +10,7 @@
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, slugify, walk, readJson, writeState, Gates, posix, NEVER_SHIP,
+  args, die, slugSafe, childDir, walk, readJson, writeState, Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
 const a = args();
@@ -20,7 +20,11 @@ if (!projectName) die("--project-name is required (the OD project display name)"
 if (!projectDir || !existsSync(projectDir)) die(`--project-dir missing or not found: ${projectDir}`);
 
 const outDir = a.out ?? process.cwd();
-const slug = slugify(projectName);
+// Every later phase turns this into `<outDir>/<slug>/`, and phase 01 deletes that
+// directory on a `--force` rebuild — so the slug has to be a real directory name,
+// not the empty string a fully non-Latin project name would otherwise produce.
+const slug = slugSafe(projectName);
+childDir(outDir, slug, "project slug");
 
 /* ── entry file (Claude Design's {{OPEN_FILE}}) ─────────────────────────── */
 // OD's analogue is get_active_context(), which returns the active project AND file.
@@ -154,6 +158,7 @@ g.check("entry mode recorded", entryMode === "form1" || entryMode === "form2",
 g.check("design system resolved or explicitly none", designSystem !== undefined,
   designSystem ? `${designSystem.dir} (${designSystem.shape}, ${designSystem.componentCount} components, ${designSystem.aliases.length} alias)` : "none");
 g.check("token carrier named", !!tokenCarrier, tokenCarrier);
+g.check("slug is a usable directory name", /^[a-z0-9][a-z0-9-]*$/.test(slug), `${slug}/`);
 // Only a design system that DECLARES fonts owes us binaries; one that inherits the
 // host's typography legitimately ships none.
 if (designSystem?.fonts.length) {

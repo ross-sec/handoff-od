@@ -8,7 +8,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, walk, archive, archiveEntryCount, Gates,
+  args, die, readState, readJson, writeJson, walk, archive, archiveEntryCount, childDir, Gates,
 } from "./_lib.js";
 
 const a = args();
@@ -17,8 +17,16 @@ const state = readState(outRoot);
 if (!state) die("no .handoff/state.json — run hod-detect.js first");
 
 const { project } = state;
-const bundleRoot = join(outRoot, project.slug);
+const bundleRoot = childDir(outRoot, project.slug, "project slug");
 if (!existsSync(bundleRoot)) die(`no ${project.slug}/ — run hod-bundle.js first`);
+
+// The display name goes straight into a filename. Drop the characters a path or a
+// Windows filesystem would choke on so `Design: v2` or a name carrying a separator
+// cannot steer the archive out of outRoot.
+const archiveBase =
+  String(project.name).replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ")
+    .replace(/^[.\s]+|[.\s]+$/g, "") ||
+  project.slug;
 
 // I8 — never archive an unvalidated tree.
 const verdict = readJson(join(outRoot, ".handoff", "validate.json"));
@@ -29,7 +37,7 @@ const treeCount = walk(bundleRoot).length;
 const written = [];
 
 for (const ext of format === "both" ? ["zip", "tar.gz"] : [format === "targz" ? "tar.gz" : "zip"]) {
-  const outFile = join(outRoot, `${project.name}-handoff.${ext}`);
+  const outFile = join(outRoot, `${archiveBase}-handoff.${ext}`);
   try {
     archive(outRoot, project.slug, outFile);
   } catch (err) {

@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   args, die, readState, readJson, writeJson, writeText, copyTree, walk,
-  Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
+  childDir, Gates, posix, NEVER_SHIP, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { buildAdherence, collectComponents } from "./_adherence.js";
 
@@ -22,7 +22,9 @@ const state = readState(outRoot);
 if (!state) die("no .handoff/state.json — run hod-detect.js first");
 
 const { project, entry, designSystem, options } = state;
-const bundleRoot = join(outRoot, project.slug);
+// `--force` below is a recursive delete: resolve the target through the guard so a
+// slug that is empty, `.`, absolute, or climbs out of outRoot can never name it.
+const bundleRoot = childDir(outRoot, project.slug, "project slug");
 
 if (existsSync(bundleRoot)) {
   if (!a.force) die(`${project.slug}/ already exists — pass --force to rebuild`);

@@ -2,6 +2,49 @@
 
 All notable changes to `@ross-sec/handoff-od` are documented here.
 
+## [0.1.4] - 2026-08-16
+
+Found in review of the Open Design catalog submission (nexu-io/open-design#6948). **Anyone on 0.1.3
+should upgrade** — the bug below destroys data with no warning.
+
+### Fixed
+
+- **`--force` could delete the entire output directory.** `slugify()` strips every character outside
+  `[a-z0-9]`, so a project named `设计`, `дизайн` or `🎨` produced an empty slug. `hod-bundle.js` then
+  computed `bundleRoot = join(outRoot, "")`, which *is* `outRoot`, and the documented rebuild path ran
+  `rmSync(outRoot, { recursive: true, force: true })` against it. Reproduced against 0.1.3: with
+  `--out <dir>`, every unrelated file and directory under the output root was wiped and only the fresh
+  mirror survived. Without `--force` the same projects could not bundle at all, because the output
+  directory always "already existed".
+
+  Fixed in two independent places, because state is read back from disk and a `.handoff/state.json`
+  written by 0.1.3 still carries the empty slug:
+
+  - `slugSafe()` — a project name with nothing slug-worthy in it falls back to
+    `project-<sha256(name)[0..8]>`, which is non-empty, stable across runs (so `--force` can still
+    rebuild) and distinct per name (so two projects never share a directory). A name that already
+    slugifies is untouched.
+  - `childDir()` — every path the pipeline deletes or writes a tree into is resolved through a guard
+    that refuses anything not a strict descendant of the output root: `""`, `.`, `..`, `../escape`,
+    `a/../..`, `/abs`, `C:\abs`. Applied in `hod-bundle.js`, `hod-validate.js`, `hod-archive.js` and
+    `hod-spec.js`, so the deletion target cannot equal `outRoot` regardless of where the slug came from.
+
+- **The project display name reached the archive filename unsanitized.** A name containing `/`, `\`,
+  `:` or a control character could steer `<name>-handoff.zip` out of the output directory or produce a
+  filename Windows rejects. It is now stripped to a safe basename, falling back to the slug.
+
+- **An unslugifiable `--feature` selected the whole project.** `hod-spec.js` filtered prototypes with
+  `slugify(basename(f)).includes(slugify(feature).split("-")[0])`; when the feature slug was empty
+  that inner value was `""`, which every string contains. It now falls back to the entry file.
+
+### Added
+
+- Regression coverage for all of the above: a non-Latin project name bundles and `--force`-rebuilds
+  into its own directory with an untouched sibling sentinel; `hod-bundle.js` exits 2 on each of the
+  seven escaping slugs above, with the project and output directory intact afterwards; the archive
+  filename cannot leave the output root; and `slugSafe` is asserted non-empty, deterministic and
+  collision-free. 37 tests, green.
+
 ## [0.1.3] - 2026-08-16
 
 Prepared for submission to the Open Design community catalog.

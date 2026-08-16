@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  args, die, readState, readJson, writeJson, walk, Gates, TEXTUAL, SYNC_BOOKKEEPING,
+  args, die, readState, readJson, writeJson, walk, childDir, Gates, TEXTUAL, SYNC_BOOKKEEPING,
 } from "./_lib.js";
 import { verifyAdherence } from "./_adherence.js";
 
@@ -82,7 +82,7 @@ if (a.spec) {
 
 /* ── bundle mode (Mechanism A) ─────────────────────────────────────────────── */
 
-const bundleRoot = join(outRoot, project.slug);
+const bundleRoot = childDir(outRoot, project.slug, "project slug");
 if (!existsSync(bundleRoot)) die(`no ${project.slug}/ — run hod-bundle.js first`);
 const files = walk(bundleRoot);
 

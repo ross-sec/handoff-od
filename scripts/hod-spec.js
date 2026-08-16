@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
-  args, die, readState, readJson, writeText, walk, slugify, Gates, posix, NEVER_SHIP,
+  args, die, readState, readJson, writeText, walk, slugify, slugSafe, childDir, Gates, posix, NEVER_SHIP,
 } from "./_lib.js";
 
 const a = args();
@@ -22,18 +22,21 @@ const { project, entry, designSystem, options } = state;
 const feature = (typeof a.feature === "string" && a.feature) || options.feature;
 if (!feature) die('--feature is required, e.g. --feature "auth system"');
 
-const slug = slugify(feature).replace(/-/g, "_");
-const dir = join(project.dir, `design_handoff_${slug}`);
+const slug = slugSafe(feature, "feature").replace(/-/g, "_");
+const dir = childDir(project.dir, `design_handoff_${slug}`, "feature slug");
 mkdirSync(join(dir, "prototypes"), { recursive: true });
 mkdirSync(join(dir, "reference"), { recursive: true });
 
 /* ── in-scope prototypes ────────────────────────────────────────────────────── */
 
 const all = walk(project.dir, { exclude: [...NEVER_SHIP, /^design_handoff_/] });
+// A feature named entirely outside [a-z0-9] has no stem to match on, and `""` is a
+// substring of every string — so guard it, or the filter selects the whole project.
+const stem = slugify(feature).split("-")[0];
 const selected = typeof a.files === "string"
   ? a.files.split(",").map((s) => s.trim()).filter(Boolean)
-  : all.filter((f) => /\.(dc\.html|html)$/i.test(f) && !f.includes("/") &&
-      slugify(basename(f)).includes(slugify(feature).split("-")[0]));
+  : (stem ? all.filter((f) => /\.(dc\.html|html)$/i.test(f) && !f.includes("/") &&
+      slugify(basename(f)).includes(stem)) : []);
 
 const prototypes = (selected.length ? selected : (entry.file ? [entry.file] : []))
   .filter((f) => existsSync(join(project.dir, f)));

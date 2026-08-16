@@ -4,8 +4,9 @@ import {
   readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync,
   existsSync, statSync, rmSync, openSync, readSync, closeSync,
 } from "node:fs";
-import { join, dirname, relative, sep } from "node:path";
+import { join, dirname, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 export const STATE_DIR = ".handoff";
 export const STATE_PATH = join(STATE_DIR, "state.json");
@@ -21,6 +22,39 @@ export function slugify(name) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Non-empty slug, for the places a slug becomes a directory name.
+ *
+ * `slugify` legitimately returns `""` for a name written entirely outside
+ * `[a-z0-9]` — `设计`, `дизайн`, `🎨` — and an empty slug is not a cosmetic
+ * problem: `join(root, "")` IS `root`. Fall back to a digest of the original
+ * name so such a project still gets a directory of its own that is stable
+ * across runs (so `--force` can rebuild it) and distinct from its neighbours
+ * (so two differently-named projects never share one).
+ */
+export function slugSafe(name, prefix = "project") {
+  return slugify(name) ||
+    `${prefix}-${createHash("sha256").update(String(name ?? ""), "utf8").digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * A directory that MUST be a strict descendant of `root`. Guards every path the
+ * pipeline later deletes or writes a whole tree into.
+ *
+ * The name arrives from `.handoff/state.json`, which is on disk, hand-editable,
+ * and may have been written by an older release — so validating it once at the
+ * point it was produced is not enough. An empty, `.`, `..`-escaping or absolute
+ * name resolves to `root` itself or outside it, which would turn the documented
+ * `--force` rebuild into a recursive delete of the user's output directory.
+ */
+export function childDir(root, name, label = "path") {
+  const base = resolve(root);
+  const target = resolve(base, String(name ?? ""));
+  if (target === base) die(`refusing to use ${label} "${name}" — it resolves to the output directory itself (${base})`);
+  if (!target.startsWith(base + sep)) die(`refusing to use ${label} "${name}" — it resolves outside the output directory (${target})`);
+  return target;
 }
 
 export const posix = (p) => String(p).split(sep).join("/");
